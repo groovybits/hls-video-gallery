@@ -4,8 +4,11 @@ CPPFLAGS ?=
 LDFLAGS ?=
 LDLIBS ?= -pthread
 
-TARGET := hls-quality-analyzer
-SOURCE := src/main.cpp
+ANALYZER_TARGET := hls-quality-analyzer
+ANALYZER_SOURCE := src/main.cpp
+RENDERER_TARGET := hls-quality-report-renderer
+RENDERER_SOURCE := src/report_renderer_main.cpp
+TARGETS := $(ANALYZER_TARGET) $(RENDERER_TARGET)
 
 ifeq ($(shell uname -s),Darwin)
 MACOS_SDK := $(shell xcrun --show-sdk-path 2>/dev/null)
@@ -17,13 +20,17 @@ endif
 
 .PHONY: all clean test
 
-all: $(TARGET)
+all: $(TARGETS)
 
-$(TARGET): $(SOURCE)
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SOURCE) -o $@ $(LDFLAGS) $(LDLIBS)
+$(ANALYZER_TARGET): $(ANALYZER_SOURCE) src/report_renderer.hpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(ANALYZER_SOURCE) -o $@ $(LDFLAGS) $(LDLIBS)
 
-test: $(TARGET)
+$(RENDERER_TARGET): $(RENDERER_SOURCE) src/report_renderer.hpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(RENDERER_SOURCE) -o $@ $(LDFLAGS)
+
+test: $(TARGETS)
+	./test-renderer.sh
 	./test-smoke.sh
 
 clean:
-	rm -f -- $(TARGET)
+	rm -f -- $(TARGETS)

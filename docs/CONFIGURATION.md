@@ -117,7 +117,7 @@ gallery flag controls authenticated display.
 
 | Key | Default | Meaning |
 |---|---:|---|
-| `enabled` | `false` | Builds the C++ analyzer and enables the instance's quality timer. |
+| `enabled` | `false` | Builds the C++ analyzer and report renderer, then enables the instance's quality timer. |
 | `items_per_run` | `1` | Maximum videos measured serially during one timer activation, 1–20. |
 | `interval_seconds` | `1` | Delay between completed timer activations, 1–86400 seconds. |
 | `max_load` | `0` | Optional one-minute load ceiling; `0` disables this gate while process/lock checks remain active. |

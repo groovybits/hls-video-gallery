@@ -26,6 +26,8 @@
 #include <tuple>
 #include <vector>
 
+#include "report_renderer.hpp"
+
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -37,7 +39,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr const char* kAnalyzerName = "hls-quality-analyzer";
-constexpr const char* kAnalyzerVersion = "1.1.0";
+constexpr const char* kAnalyzerVersion = "1.1.1";
 constexpr const char* kConfigVersion = "quality-composite-v1";
 constexpr std::size_t kHashWidth = 32;
 constexpr std::size_t kHashHeight = 32;
@@ -117,22 +119,6 @@ std::string json_escape(const std::string& value) {
         }
     }
     return out.str();
-}
-
-std::string html_escape(const std::string& value) {
-    std::string out;
-    out.reserve(value.size());
-    for (char c : value) {
-        switch (c) {
-            case '&': out += "&amp;"; break;
-            case '<': out += "&lt;"; break;
-            case '>': out += "&gt;"; break;
-            case '"': out += "&quot;"; break;
-            case '\'': out += "&#39;"; break;
-            default: out += c;
-        }
-    }
-    return out;
 }
 
 std::string utc_now() {
@@ -1552,137 +1538,6 @@ std::string build_frames_csv(const std::vector<FrameMetrics>& frames) {
     return csv.str();
 }
 
-std::string metric_card(const std::string& label, const std::optional<double>& value,
-                        const std::string& suffix = {}) {
-    std::ostringstream html;
-    html << "<div class=\"metric\"><span>" << html_escape(label) << "</span><strong>";
-    if (value) html << std::fixed << std::setprecision(2) << *value << html_escape(suffix);
-    else html << "N/A";
-    html << "</strong></div>";
-    return html.str();
-}
-
-std::string build_quality_chart(const std::vector<FrameMetrics>& frames) {
-    const auto sampled = timeline_indices(frames);
-    if (sampled.empty()) return {};
-    std::ostringstream points;
-    for (std::size_t index = 0; index < sampled.size(); ++index) {
-        const double x = sampled.size() == 1
-            ? 0.0 : static_cast<double>(index) * 1000.0 /
-                    static_cast<double>(sampled.size() - 1);
-        const double y = 10.0 + (100.0 - frames[sampled[index]].composite) * 2.0;
-        if (index) points << ' ';
-        points << std::fixed << std::setprecision(2) << x << ',' << y;
-    }
-    std::ostringstream html;
-    html << "<section><h2>Quality over time</h2>"
-         << "<p class=\"sub\">Up to 1,000 minimum-preserving time buckets; downward spikes "
-            "show the weakest frames.</p>"
-         << "<div class=\"chart\"><svg role=\"img\" aria-label=\"Composite quality over time\" "
-            "viewBox=\"0 0 1000 220\" preserveAspectRatio=\"none\">"
-         << "<line x1=\"0\" y1=\"30\" x2=\"1000\" y2=\"30\" class=\"guide\"/>"
-         << "<line x1=\"0\" y1=\"110\" x2=\"1000\" y2=\"110\" class=\"guide\"/>"
-         << "<line x1=\"0\" y1=\"210\" x2=\"1000\" y2=\"210\" class=\"guide\"/>"
-         << "<polyline points=\"" << points.str() << "\"/></svg>"
-         << "<div class=\"axis\"><span>Start</span><span>End</span></div></div></section>";
-    return html.str();
-}
-
-std::string build_report_html(
-    const Options& options, double duration, const std::vector<FrameMetrics>& frames,
-    const std::vector<SceneMetrics>& scenes, const SceneMetrics& overall,
-    bool phone_available, const std::vector<std::string>& warnings
-) {
-    std::ostringstream html;
-    html << "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-         << "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-         << "<title>Video quality report</title><style>"
-         << ":root{color-scheme:dark;--bg:#0d1117;--card:#161b22;--line:#30363d;"
-            "--text:#f0f6fc;--muted:#8b949e;--accent:#f778ba;--good:#3fb950}"
-         << "*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0,"
-            "#2b1730 0,transparent 35%),var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}"
-         << "main{max-width:1180px;margin:auto;padding:38px 22px 70px}h1{font-size:clamp(2rem,5vw,4rem);"
-            "margin:.1em 0}.kicker{color:var(--accent);font-weight:800;letter-spacing:.12em;text-transform:uppercase}"
-         << ".sub,.note{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));"
-            "gap:12px;margin:24px 0}.metric{background:linear-gradient(145deg,#1b2028,var(--card));"
-            "border:1px solid var(--line);border-radius:14px;padding:17px}.metric span{display:block;color:var(--muted);"
-            "font-size:.78rem;text-transform:uppercase;letter-spacing:.08em}.metric strong{display:block;font-size:1.8rem;"
-            "margin-top:5px}.score strong{color:var(--good)}section{margin-top:34px}"
-         << ".table{overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--card)}"
-            "table{width:100%;border-collapse:collapse;white-space:nowrap}th,td{padding:12px 14px;text-align:right;"
-            "border-bottom:1px solid var(--line)}th:first-child,td:first-child{text-align:left}th{color:var(--muted);"
-            "font-size:.75rem;text-transform:uppercase;letter-spacing:.06em}tr:last-child td{border:0}"
-         << ".warnings{border-left:4px solid #d29922;background:#2b2417;padding:12px 18px;border-radius:8px}"
-            ".chart{background:#10151c;border:1px solid var(--line);border-radius:14px;padding:12px}"
-            ".chart svg{display:block;width:100%;height:260px}.chart polyline{fill:none;stroke:var(--accent);"
-            "stroke-width:3;vector-effect:non-scaling-stroke}.chart .guide{stroke:#30363d;stroke-width:1}"
-            ".axis{display:flex;justify-content:space-between;color:var(--muted);font-size:.8rem}"
-            "code{color:#ffa7d1}a{color:#ff9bd2}</style></head><body><main>"
-         << "<p class=\"kicker\">Objective video analysis</p><h1>Quality report</h1>"
-         << "<p class=\"sub\"><code>" << html_escape(options.distorted.filename().string())
-         << "</code> compared with <code>" << html_escape(options.reference.filename().string())
-         << "</code> · " << std::fixed << std::setprecision(2) << duration
-         << " seconds · " << frames.size() << " aligned frames at "
-         << std::setprecision(3) << options.frame_rate << " fps"
-         << (options.reference_stream_index >= 0
-                 ? " · global reference stream <code>" +
-                       std::to_string(options.reference_stream_index) + "</code>"
-                 : " · first reference video stream")
-         << (options.deinterlace_reference
-                 ? " · reference deinterlaced with <code>yadif=deint=interlaced</code>"
-                 : "")
-         << "</p><div class=\"grid\">";
-    html << "<div class=\"metric score\"><span>Overall score</span><strong>"
-         << std::fixed << std::setprecision(2) << overall.score << "</strong><small>"
-         << quality_band(overall.score) << "</small></div>";
-    html << metric_card("Standard VMAF", overall.vmaf_standard.mean)
-         << metric_card("Phone VMAF", overall.vmaf_phone.mean)
-         << metric_card("PSNR Y", overall.psnr_y.mean, " dB")
-         << metric_card("SSIM", overall.ssim.mean)
-         << metric_card("pHash similarity", overall.phash.mean)
-         << metric_card("Temporal consistency", overall.temporal.mean)
-         << "</div><p class=\"note\">Composite: 50% standard VMAF, 20% normalized SSIM, "
-            "15% normalized PSNR, and 15% pHash similarity. The final score is 70% "
-            "weighted mean plus 30% worst decile. Phone VMAF and temporal consistency "
-            "are informational diagnostics.</p>";
-    if (!warnings.empty()) {
-        html << "<div class=\"warnings\"><strong>Warnings</strong><ul>";
-        for (const auto& warning : warnings) html << "<li>" << html_escape(warning) << "</li>";
-        html << "</ul></div>";
-    }
-    html << build_quality_chart(frames);
-    html << "<section><h2>Per-scene results</h2><p class=\"sub\">Scene boundaries come only "
-            "from FFmpeg scdet on the normalized reference; clips shorter than the requested minimum are merged.</p>"
-         << "<div class=\"table\"><table><thead><tr><th>Scene</th><th>Range</th><th>Frames</th>"
-            "<th>Score</th><th>VMAF</th><th>Phone</th><th>PSNR Y</th><th>SSIM</th><th>pHash</th>"
-            "<th>Temporal</th></tr></thead><tbody>";
-    auto show = [](const std::optional<double>& value, int precision = 2) {
-        if (!value) return std::string("N/A");
-        std::ostringstream out;
-        out << std::fixed << std::setprecision(precision) << *value;
-        return out.str();
-    };
-    for (std::size_t index = 0; index < scenes.size(); ++index) {
-        const auto& scene = scenes[index];
-        html << "<tr><td>Scene " << index + 1 << "</td><td>"
-             << std::fixed << std::setprecision(2) << scene.range.start / options.frame_rate
-             << "–" << scene.range.end / options.frame_rate << "s</td><td>"
-             << scene.range.end - scene.range.start << "</td><td><strong>"
-             << std::setprecision(2) << scene.score << "</strong></td><td>"
-             << show(scene.vmaf_standard.mean) << "</td><td>" << show(scene.vmaf_phone.mean)
-             << "</td><td>" << show(scene.psnr_y.mean) << "</td><td>"
-             << show(scene.ssim.mean, 4) << "</td><td>" << show(scene.phash.mean)
-             << "</td><td>" << show(scene.temporal.mean) << "</td></tr>";
-    }
-    html << "</tbody></table></div></section><section><h2>Artifacts</h2>"
-            "<p><a href=\"report.json\">report.json</a> · "
-            "<a href=\"frames.csv\">frames.csv</a></p></section>"
-         << "<footer class=\"note\">Generated by " << kAnalyzerName << " " << kAnalyzerVersion
-         << " · phone model " << (phone_available ? "available" : "unavailable")
-         << "</footer></main></body></html>\n";
-    return html.str();
-}
-
 void print_terminal_summary(const SceneMetrics& overall, std::size_t frames,
                             const std::vector<SceneMetrics>& scenes, double duration,
                             bool phone_available, const fs::path& output_directory,
@@ -1825,15 +1680,20 @@ int run(const Options& options) {
 
     progress.update("writing_reports", common_duration, 98.0, frames.size(), scenes.size(),
                     {}, 0.0, 0.0, 0.0, true, {}, true);
+    const std::string report_json = build_report_json(
+        options, reference, distorted, normalization, common_duration,
+        frames, scenes, overall, combined.phone_available, warnings);
     atomic_write(options.output_directory / "frames.csv", build_frames_csv(frames));
-    atomic_write(options.output_directory / "report.html",
-        build_report_html(options, common_duration, frames, scenes, overall,
-                          combined.phone_available, warnings));
+    atomic_write(
+        options.output_directory / "report.html",
+        hls_quality_report::render(
+            report_json, {},
+            std::string("analyzer-") + kAnalyzerVersion
+        )
+    );
     // report.json is the commit marker: consumers never observe it before the
     // same-generation CSV and HTML artifacts have been published.
-    atomic_write(options.output_directory / "report.json",
-        build_report_json(options, reference, distorted, normalization, common_duration,
-                          frames, scenes, overall, combined.phone_available, warnings));
+    atomic_write(options.output_directory / "report.json", report_json);
 
     progress.update("complete", common_duration, 100.0, frames.size(), scenes.size(),
                     {}, 0.0, 0.0, 0.0, false, {}, true);

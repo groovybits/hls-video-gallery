@@ -100,7 +100,22 @@ as the report-set commit marker.
   minimum-preserving timeline, every aligned frame, settings, capabilities,
   overall metrics, warnings, and per-scene results
 - `frames.csv`: aligned per-frame metrics
-- `report.html`: self-contained human-readable report
+- `report.html`: self-contained interactive report with all seven score series,
+  scene and segment overlays, inspection/zoom controls, and complete drill-down
+  tables. Direct comparisons use labeled nominal segment ranges; the separate
+  `hls-quality-report-renderer` can embed an exact gallery `dashboard.json`.
+
+Existing reports can be rendered again without decoding either video:
+
+```bash
+hls-quality-report-renderer \
+  --report-json /path/to/report.json \
+  --dashboard-json /path/to/dashboard.json \
+  --output /path/to/report.html
+```
+
+The dashboard argument is optional. Both renderer modes produce one offline
+HTML file with no external scripts, stylesheets, fonts, or network requests.
 
 The shorter aligned input determines the analyzed duration. The reference is
 scaled to the distorted encode's display dimensions. FFmpeg's normal

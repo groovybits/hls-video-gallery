@@ -2,6 +2,18 @@
 
 All notable changes are documented here.
 
+## 1.4.1 — 2026-07-23
+
+- Brought the self-contained `report.html` artifact up to the same detailed
+  multi-metric experience as the authenticated video page, including
+  scene/segment overlays, inspection, zooming, and complete drill-down tables.
+- Added a separate C++ report renderer so completed JSON measurements can be
+  refreshed without decoding video or running VMAF again.
+- Reclassified standalone HTML as a fingerprinted presentation cache while
+  keeping `report.json` and `frames.csv` as the immutable measurement identity.
+- Added an explicit presentation-only backfill command and exact HLS segment
+  detail when the gallery dashboard projection is available.
+
 ## 1.4.0 — 2026-07-23
 
 - Replaced the compact quality timeline with an interactive, Grafana-inspired

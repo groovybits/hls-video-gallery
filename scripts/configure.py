@@ -14,7 +14,7 @@ import sys
 from urllib.parse import urlparse
 
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 PIPELINE_VERSION = 6
 CONTENT_ANALYZER_BASE_VERSION = "mobileclip2-s0-configurable-v1"
 PRESETS = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}

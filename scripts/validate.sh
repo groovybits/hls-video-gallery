@@ -21,6 +21,10 @@ while IFS= read -r file; do
     PYTHONPYCACHEPREFIX="$python_cache" python3 -m py_compile "$file"
 done < <(find "$repo_root/scripts" "$repo_root/site/_tools" -type f -name '*.py' -print | sort)
 
+PYTHONPYCACHEPREFIX="$python_cache" python3 -m unittest discover \
+    -s "$repo_root/tests" \
+    -p 'test_*.py'
+
 while IFS= read -r file; do
     node --check "$file"
 done < <(find "$repo_root/site/assets" -maxdepth 1 -type f -name '*.js' ! -name 'hls.min.js' -print | sort)

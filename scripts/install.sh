@@ -183,6 +183,11 @@ python3 "$script_dir/deploy-files.py" \
     --target "$target" \
     --owner "$site_owner"
 
+install -d -m 0755 -o root -g root /usr/local/libexec/hls-video-gallery
+install -m 0755 -o root -g root \
+    "$script_dir/prepare-media-permissions.py" \
+    /usr/local/libexec/hls-video-gallery/prepare-media-permissions.py
+
 marker_tmp="$(mktemp)"
 printf 'HLS Video Gallery\nVersion: %s\nPipeline-Version: %s\nInstance-ID: %s\nConfig-SHA256: %s\nEncoding-SHA256: %s\nInstalled: %s\nTarget: %s\n' \
     "$app_version" "$pipeline_version" "$instance_id" "$config_sha" "$encoding_sha" "$(date -Is)" "$target" >"$marker_tmp"
@@ -206,12 +211,18 @@ monitor_service="hls-gallery-${instance_id}-monitor.service"
 analyzer_service="hls-gallery-${instance_id}-analyzer.service"
 analyzer_timer="hls-gallery-${instance_id}-analyzer.timer"
 bunny_service="hls-gallery-${instance_id}-bunny.service"
+media_permission_service="hls-gallery-${instance_id}-media-permissions.service"
+media_permission_path="hls-gallery-${instance_id}-media-permissions.path"
+media_permission_timer="hls-gallery-${instance_id}-media-permissions.timer"
 
 install_unit hls-gallery-scan.service "$scan_service"
 install_unit hls-gallery-scan.timer "$scan_timer"
 install_unit hls-gallery-monitor.service "$monitor_service"
 install_unit hls-gallery-analyzer.service "$analyzer_service"
 install_unit hls-gallery-analyzer.timer "$analyzer_timer"
+install_unit hls-gallery-media-permissions.service "$media_permission_service"
+install_unit hls-gallery-media-permissions.path "$media_permission_path"
+install_unit hls-gallery-media-permissions.timer "$media_permission_timer"
 
 if [[ "$cdn_provider" == "bunny" ]]; then
     install_unit hls-gallery-bunny.service "$bunny_service"
@@ -235,6 +246,8 @@ fi
 
 systemctl daemon-reload
 if $start_services; then
+    systemctl enable --now "$media_permission_path" "$media_permission_timer"
+    systemctl start "$media_permission_service"
     systemctl enable --now "$monitor_service" "$scan_timer"
     systemctl start --no-block "$scan_service" || true
     if [[ "$cdn_provider" == "bunny" ]]; then

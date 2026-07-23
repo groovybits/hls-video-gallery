@@ -282,7 +282,7 @@
 
   function loadLibraryStateFromUrl() {
     var params = new URLSearchParams(window.location.search);
-    var validSorts = ["newest", "oldest", "name", "activity", "shortest", "longest", "size"];
+    var validSorts = ["newest", "oldest", "uploaded-newest", "uploaded-oldest", "name", "activity", "shortest", "longest", "size"];
     var tagKeys = CONTENT_TAGS.map(function (tag) { return tag.key; });
     var sort = params.get("sort") || "newest";
     if (sort === "duration") sort = "longest";
@@ -658,7 +658,7 @@
     parameterSection.appendChild(parameterList);
 
     var upcomingSection = el("div", "monitor-upcoming");
-    upcomingSection.appendChild(el("h3", "", "Up next"));
+    upcomingSection.appendChild(el("h3", "", "Up next · " + (queue.order_label || "queue order")));
     var upcoming = queue.upcoming || [];
     if (upcoming.length) {
       var previewList = el("ol", "monitor-upcoming-preview");
@@ -1039,7 +1039,8 @@
     append(facts,
       el("span", "chip", resolution(item)),
       el("span", "chip", titleCaseCodec(video.codec_name)),
-      el("span", "chip", formatBytes(item.size_bytes))
+      el("span", "chip", formatBytes(item.size_bytes)),
+      item.uploaded_at ? el("span", "chip", "Uploaded " + formatDate(item.uploaded_at, false)) : null
     );
     append(body, title, path, tagSources, lengthTag, facts);
     append(link, poster, body);
@@ -1069,6 +1070,14 @@
     });
 
     items.sort(function (a, b) {
+      if (libraryState.sort === "uploaded-newest" || libraryState.sort === "uploaded-oldest") {
+        var direction = libraryState.sort === "uploaded-oldest" ? 1 : -1;
+        var aSequence = Number(a.upload_sequence) || 0;
+        var bSequence = Number(b.upload_sequence) || 0;
+        if (aSequence && bSequence && aSequence !== bSequence) return (aSequence - bSequence) * direction;
+        var uploadOrder = String(a.uploaded_at || a.modified_at).localeCompare(String(b.uploaded_at || b.modified_at));
+        if (uploadOrder) return uploadOrder * direction;
+      }
       if (libraryState.sort === "oldest") return String(a.modified_at).localeCompare(String(b.modified_at));
       if (libraryState.sort === "name") return a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: "base" });
       if (libraryState.sort === "activity") {
@@ -1404,8 +1413,10 @@
     var sort = el("select");
     sort.setAttribute("aria-label", "Sort videos");
     [
-      ["newest", "Newest first"],
-      ["oldest", "Oldest first"],
+      ["newest", "Recently modified"],
+      ["oldest", "Oldest modified"],
+      ["uploaded-newest", "Recently uploaded"],
+      ["uploaded-oldest", "First uploaded"],
       ["name", "Title A–Z"],
       ["activity", "Activity A–Z"],
       ["shortest", "Shortest first"],
@@ -1857,6 +1868,7 @@
     addStat(stats, "Source audio", item.audio_streams.length ? titleCaseCodec(firstAudio.codec_name) : "No audio");
     addStat(stats, "Container", item.format_long_name || item.format_name);
     addStat(stats, "Overall rate", formatBitrate(item.bit_rate));
+    addStat(stats, "Uploaded", item.uploaded_at ? formatDate(item.uploaded_at, true) : "Not yet indexed");
     addStat(stats, "Created", item.creation_at ? formatDate(item.creation_at, true) : "Not embedded in source");
     addStat(stats, "Modified", formatDate(item.modified_at, true));
     append(overview, overviewHead, stats);

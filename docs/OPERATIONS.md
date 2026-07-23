@@ -9,6 +9,9 @@ Examples below use the instance ID `my-video-gallery` and document root
 |---|---|
 | `hls-gallery-my-video-gallery-scan.timer` | Checks for stable changed sources after each scan completes. |
 | `hls-gallery-my-video-gallery-scan.service` | One locked, one-at-a-time FFmpeg/catalog pass. |
+| `hls-gallery-my-video-gallery-media-permissions.path` | Notices newly copied source files. |
+| `hls-gallery-my-video-gallery-media-permissions.timer` | Fallback permission check for replaced files. |
+| `hls-gallery-my-video-gallery-media-permissions.service` | Makes supported sources readable by the configured site account. |
 | `hls-gallery-my-video-gallery-monitor.service` | Publishes live FFmpeg and queue telemetry. |
 | `hls-gallery-my-video-gallery-analyzer.timer` | Optional low-priority visual-tag batches. |
 | `hls-gallery-my-video-gallery-analyzer.service` | Optional cached-thumbnail model run. |
@@ -36,11 +39,14 @@ hls-gallery-status-my-video-gallery --json
 ```
 
 Queue position and total describe the current scan run, not the all-time catalog.
-The same telemetry feeds the authenticated web status panel.
+Pending sources are processed oldest upload first, and the same telemetry feeds
+the authenticated web status panel.
 
 ## Adding, replacing, and deleting media
 
 - Add: finish copying a file into `media/`. It is processed after `settle_seconds`.
+- Administrator uploads are automatically reassigned to the configured site
+  account and made readable; the scanner itself remains unprivileged.
 - Replace: replace the source while preserving its relative path. The changed size
   or mtime creates a new cache version and invalidates its prior guest link.
 - Rename: treated as deleting one gallery ID and adding another.
@@ -111,6 +117,8 @@ output where appropriate.
 - Verify its extension is supported.
 - Wait through `settle_seconds`.
 - Confirm the upload has stopped changing the file.
+- Check `systemctl status hls-gallery-my-video-gallery-media-permissions.service`
+  if the file was copied by another account.
 - Run a scan manually and watch the scan log.
 - Use `ffprobe` on the source; incomplete browser-recorded WebM files may require
   the scanner’s packet-timestamp fallback and therefore take longer to probe.

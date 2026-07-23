@@ -274,6 +274,7 @@ class EncodingMonitor:
         previous_phase = previous_payload.get("phase") if isinstance(previous_payload, dict) else ""
         self.last_hls_speed = number(previous_payload.get("speed")) if previous_phase in {"hls_encode", "combined_encode"} else 0.0
         self.duration_index_path = root / "data" / "queue-durations.json"
+        self.ingest_order_path = root / "data" / "ingest-order.json"
         duration_payload = load_json(self.duration_index_path, {})
         self.duration_index = duration_payload.get("items", {}) if isinstance(duration_payload, dict) else {}
         if not isinstance(self.duration_index, dict):
@@ -288,6 +289,28 @@ class EncodingMonitor:
         if not isinstance(self.queue_run, dict):
             self.queue_run = {}
         self.seed_durations_from_catalog()
+
+    def ordered_videos(self):
+        videos = discover_videos(self.media_root)
+        payload = load_json(self.ingest_order_path, {})
+        records = payload.get("items", {}) if isinstance(payload, dict) else {}
+        order_by_relative = {}
+        for record in records.values() if isinstance(records, dict) else []:
+            if not isinstance(record, dict):
+                continue
+            relative = str(record.get("relative_path") or "")
+            try:
+                sequence = int(record.get("sequence"))
+            except (TypeError, ValueError, OverflowError):
+                sequence = 0
+            if relative and sequence > 0:
+                order_by_relative[relative] = sequence
+
+        def upload_key(path):
+            relative = path.relative_to(self.media_root).as_posix()
+            return (order_by_relative.get(relative, 2**63 - 1), relative.casefold())
+
+        return sorted(videos, key=upload_key)
 
     def prune_missing_catalog_items(self):
         now = time.monotonic()
@@ -326,7 +349,7 @@ class EncodingMonitor:
                 "removed_count": len(removed),
             }
             if isinstance(catalog.get("scan"), dict):
-                catalog["scan"]["source_count"] = len(discover_videos(self.media_root))
+                catalog["scan"]["source_count"] = len(self.ordered_videos())
             atomic_write_json(catalog_path, catalog)
             removed_names = []
             for item in removed:
@@ -474,7 +497,8 @@ class EncodingMonitor:
         stored_sources = self.queue_run.get("sources")
         if scanner_key and scanner_key == stored_key and isinstance(stored_sources, list):
             present = set(relative_paths)
-            run_sources = [relative for relative in stored_sources if relative in present]
+            stored = set(stored_sources)
+            run_sources = [relative for relative in relative_paths if relative in present and relative in stored]
             if current_relative in run_sources:
                 return run_sources
 
@@ -486,7 +510,8 @@ class EncodingMonitor:
             run_sources.append(current_relative)
 
         self.queue_run = {
-            "schema_version": 1,
+            "schema_version": 2,
+            "order": "oldest_upload_first",
             "scanner_identity": scanner_key,
             "scanner_pid": scanner_pid,
             "scanner_started_at": utc_iso(scanner_started_at) if scanner_started_at else "",
@@ -514,7 +539,7 @@ class EncodingMonitor:
         while True:
             changed = False
             pending_writes = 0
-            videos = discover_videos(self.media_root)
+            videos = self.ordered_videos()
             present = {path.relative_to(self.media_root).as_posix() for path in videos}
             with self.duration_lock:
                 for relative in list(self.duration_index):
@@ -616,7 +641,7 @@ class EncodingMonitor:
         return metadata
 
     def queue_details(self, source, current_fraction, prediction_speed, forecast_overhead=1.08):
-        videos = discover_videos(self.media_root)
+        videos = self.ordered_videos()
         relative = source.relative_to(self.media_root).as_posix()
         relative_paths = [path.relative_to(self.media_root).as_posix() for path in videos]
         path_by_relative = dict(zip(relative_paths, videos))
@@ -665,6 +690,8 @@ class EncodingMonitor:
             "published": len(published_sources),
             "remaining_after_current": len(upcoming),
             "upcoming": upcoming,
+            "order": "oldest_upload_first",
+            "order_label": "oldest upload first",
             "total_duration_seconds": round(total_duration, 3),
             "completed_duration_seconds": round(completed_duration, 3),
             "remaining_duration_seconds": round(remaining_duration, 3),
@@ -837,7 +864,7 @@ class EncodingMonitor:
                 "eta_seconds": 0.0,
             })
             return payload
-        videos = discover_videos(self.media_root)
+        videos = self.ordered_videos()
         ready_count = len(self.ready_source_relatives())
         published_count = len(self.published_source_relatives())
         return {
@@ -856,7 +883,7 @@ class EncodingMonitor:
             "speed": 0.0,
             "cpu_percent": 0.0,
             "eta_seconds": 0.0,
-            "queue": {"position": 0, "total": 0, "completed": 0, "ready": ready_count, "published": published_count, "remaining_after_current": 0, "upcoming": [], "total_duration_seconds": 0.0, "remaining_duration_seconds": 0.0, "duration_indexed_count": 0, "duration_index_complete": False, "library_total": len(videos), "library_ready": ready_count, "library_published": published_count, "library_duration_indexed_count": 0, "library_duration_index_complete": False, "predicted_processing_seconds": 0.0, "predicted_finish_at": ""},
+            "queue": {"position": 0, "total": 0, "completed": 0, "ready": ready_count, "published": published_count, "remaining_after_current": 0, "upcoming": [], "order": "oldest_upload_first", "order_label": "oldest upload first", "total_duration_seconds": 0.0, "remaining_duration_seconds": 0.0, "duration_indexed_count": 0, "duration_index_complete": False, "library_total": len(videos), "library_ready": ready_count, "library_published": published_count, "library_duration_indexed_count": 0, "library_duration_index_complete": False, "predicted_processing_seconds": 0.0, "predicted_finish_at": ""},
             "parameters": {},
             "command": "",
             "preview_url": "",

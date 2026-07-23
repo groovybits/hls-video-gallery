@@ -25,6 +25,8 @@ neutral and work for any private video archive.
   details, and a visual timeline.
 - Live web and terminal telemetry for queue position, FPS, speed, ETA, current
   thumbnail, sanitized FFmpeg parameters, and the active command.
+- A macOS manager for direct Photos/iCloud-original exports, safe uploads,
+  server inventory, processing status, details, and guarded source deletion.
 - Apache Basic Auth with bcrypt password hashes outside the document root.
 - An optional public teaser page that does not expose the catalog.
 - Optional Bunny Storage/CDN sync, signed delivery, and one-video guest links.
@@ -97,6 +99,20 @@ modification dates.
 
 The `instance_id` is part of every systemd unit and status command, so multiple
 independent galleries can coexist on one server.
+
+### Mac uploads and collection management
+
+Install the double-clickable Mac manager from a repository checkout:
+
+```bash
+./scripts/install-mac-manager.sh
+```
+
+It can upload the current Photos selection or a complete Photos album, including
+iCloud-backed originals, without manually locating or downloading source files.
+It also browses queued and published sources in upload order, shows processing
+status, uploads Finder selections, and deletes a source after explicit
+confirmation. See [Mac Gallery Manager](docs/MAC_MANAGER.md).
 
 ## Before installing
 

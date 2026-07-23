@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "app_version": "1.1.0",
+  "app_version": "1.2.0",
   "generated_at": null,
   "thumbnail_interval_seconds": 10,
   "hls_segment_seconds": 6,

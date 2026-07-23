@@ -18,7 +18,7 @@ import traceback
 from urllib.parse import quote
 
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 CACHE_VERSION = 6
 HLS_PRESET = "superfast"
 ALLOWED_HLS_PRESETS = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}

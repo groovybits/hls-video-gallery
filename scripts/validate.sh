@@ -19,7 +19,7 @@ done < <(find "$repo_root/scripts" -maxdepth 1 -type f -name '*.sh' -print | sor
 
 while IFS= read -r file; do
     PYTHONPYCACHEPREFIX="$python_cache" python3 -m py_compile "$file"
-done < <(find "$repo_root/scripts" "$repo_root/site/_tools" -type f -name '*.py' -print | sort)
+done < <(find "$repo_root/scripts" "$repo_root/site/_tools" "$repo_root/tools" -type f -name '*.py' -print | sort)
 
 PYTHONPYCACHEPREFIX="$python_cache" python3 -m unittest discover \
     -s "$repo_root/tests" \

@@ -2,6 +2,14 @@
 
 All notable changes are documented here.
 
+## 1.2.0 — 2026-07-23
+
+- Added a double-clickable macOS collection manager.
+- Added direct Apple Photos selection and album exports using unmodified
+  originals, including automatic retrieval of iCloud-backed originals.
+- Added atomic SCP uploads, upload-order inventory, live processing status,
+  source details, and confirmation-protected source deletion.
+
 ## 1.1.0 — 2026-07-23
 
 - Added persistent upload timestamps and upload-order sorting in the gallery.

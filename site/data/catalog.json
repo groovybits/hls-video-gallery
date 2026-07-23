@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "app_version": "1.0.0",
+  "generated_at": null,
+  "thumbnail_interval_seconds": 10,
+  "hls_segment_seconds": 6,
+  "count": 0,
+  "scan": {
+    "source_count": 0,
+    "processed": 0,
+    "cached": 0,
+    "skipped": 0,
+    "errors": 0
+  },
+  "items": []
+}

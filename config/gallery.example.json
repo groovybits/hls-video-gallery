@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "instance_id": "my-video-gallery",
+  "install": {
+    "document_root": "/var/www/html/videos",
+    "owner": "www-data",
+    "private_dir": ""
+  },
+  "site": {
+    "public_base_url": "https://videos.example.com/videos",
+    "main_site_url": "https://example.com/",
+    "language": "en",
+    "public_landing": true
+  },
+  "brand": {
+    "owner_name": "Gallery Owner",
+    "gallery_name": "My Video Gallery",
+    "header_subtitle": "Private streaming library",
+    "main_site_label": "Main site",
+    "hero_eyebrow": "Personal collection",
+    "hero_title": "A private place for my videos.",
+    "hero_body": "Browse a phone-friendly collection with quick previews and smooth HLS playback.",
+    "loading_title": "Getting things ready…",
+    "loading_body": "Opening the latest collection.",
+    "empty_title": "The library is ready",
+    "empty_body": "New videos are being prepared. Check back soon.",
+    "video_singular": "video",
+    "video_plural": "videos",
+    "share_message": "A private video was shared with you.",
+    "profile_image": "",
+    "social_image": ""
+  },
+  "theme": {
+    "background": "#0d1117",
+    "panel": "#161b22",
+    "panel_alt": "#21262d",
+    "line": "#30363d",
+    "text": "#f0f6fc",
+    "muted": "#9da7b3",
+    "accent": "#2f81f7",
+    "accent_alt": "#79c0ff",
+    "success": "#56d364",
+    "danger": "#ff7b72"
+  },
+  "access": {
+    "basic_auth": true,
+    "realm": "Private Video Gallery",
+    "public_share_links": false
+  },
+  "gallery": {
+    "page_size": 10,
+    "autoplay": true,
+    "unmuted": true,
+    "show_encoder_status": true,
+    "show_content_analysis": false,
+    "title_words": {
+      "4k": "4K",
+      "8k": "8K",
+      "hd": "HD",
+      "hdr": "HDR",
+      "hls": "HLS",
+      "pov": "POV",
+      "uhd": "UHD"
+    }
+  },
+  "encoding": {
+    "max_height": 1080,
+    "preset": "superfast",
+    "video_bitrate": 6500000,
+    "audio_bitrate": 160000,
+    "thumbnail_interval": 10,
+    "thumbnail_width": 480,
+    "hls_segment_seconds": 6,
+    "settle_seconds": 30,
+    "failure_retry_seconds": 300,
+    "cache_retention_seconds": 86400
+  },
+  "content_analysis": {
+    "enabled": false,
+    "taxonomy": "config/tags-general.json",
+    "items_per_run": 4,
+    "interval_seconds": 210,
+    "max_load": 1.5,
+    "threads": 1
+  },
+  "cdn": {
+    "provider": "none",
+    "config_file": "config/bunny.env"
+  }
+}

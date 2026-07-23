@@ -1,0 +1,12 @@
+[Unit]
+Description=Check HLS Video Gallery (@@INSTANCE_ID@@) for changed media
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=hls-gallery-@@INSTANCE_ID@@-scan.service
+
+[Install]
+WantedBy=timers.target

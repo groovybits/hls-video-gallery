@@ -1,0 +1,8 @@
+Place source video files in this directory or in subdirectories.
+
+The scheduled scanner will wait for a file to stop changing, then create:
+- cached media statistics
+- thumbnail images at 10-second intervals
+- one phone-compatible HLS rendition, up to 1080p
+
+The original files are retained unchanged.

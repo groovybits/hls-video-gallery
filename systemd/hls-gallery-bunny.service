@@ -1,0 +1,26 @@
+[Unit]
+Description=HLS Video Gallery (@@INSTANCE_ID@@) Bunny CDN synchronization
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=VIDEO_LIBRARY_ROOT=@@DOCUMENT_ROOT@@
+Environment=BUNNY_VIDEO_CONFIG=@@PRIVATE_DIR@@/bunny-sync.env
+Environment=BUNNY_SYNC_WORKERS=4
+ExecStart=/usr/bin/python3 @@DOCUMENT_ROOT@@/_tools/bunny_sync.py --watch --interval 30
+Restart=always
+RestartSec=15
+Nice=15
+CPUWeight=5
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@@DOCUMENT_ROOT@@/data
+
+[Install]
+WantedBy=multi-user.target

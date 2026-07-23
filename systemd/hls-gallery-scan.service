@@ -1,0 +1,29 @@
+[Unit]
+Description=HLS Video Gallery (@@INSTANCE_ID@@) media scanner
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=@@OWNER@@
+Environment=VIDEO_LIBRARY_ROOT=@@DOCUMENT_ROOT@@
+Environment=VIDEO_THUMB_INTERVAL=@@THUMB_INTERVAL@@
+Environment=VIDEO_THUMB_WIDTH=@@THUMB_WIDTH@@
+Environment=VIDEO_HLS_SEGMENT_SECONDS=@@SEGMENT_SECONDS@@
+Environment=VIDEO_HLS_HEIGHT=@@VIDEO_MAX_HEIGHT@@
+Environment=VIDEO_HLS_PRESET=@@VIDEO_PRESET@@
+Environment=VIDEO_HLS_VIDEO_BITRATE=@@VIDEO_BITRATE@@
+Environment=VIDEO_HLS_AUDIO_BITRATE=@@AUDIO_BITRATE@@
+Environment=VIDEO_SETTLE_SECONDS=@@SETTLE_SECONDS@@
+Environment=VIDEO_FAILURE_RETRY_SECONDS=@@FAILURE_RETRY_SECONDS@@
+Environment=VIDEO_CACHE_RETENTION_SECONDS=@@CACHE_RETENTION_SECONDS@@
+ExecStart=/usr/bin/python3 @@DOCUMENT_ROOT@@/_tools/scan.py --wait-for-lock --verbose
+Nice=5
+CPUWeight=50
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=@@DOCUMENT_ROOT@@
+StandardOutput=append:@@DOCUMENT_ROOT@@/data/scan.log
+StandardError=append:@@DOCUMENT_ROOT@@/data/scan.log

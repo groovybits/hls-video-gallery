@@ -1,0 +1,11 @@
+Options -Indexes
+
+<IfModule mod_headers.c>
+  # Application assets are cache-busted with a version query string.
+  Header always set Cache-Control "private, max-age=31536000, immutable"
+
+  # Public teaser assets must be retrievable by social-preview crawlers.
+  <FilesMatch "^(?:preview\.css|preview\.js|config\.js|theme\.css|default-social-card\.png|brand-profile\.(?:png|jpe?g|webp)|social-card\.(?:png|jpe?g|webp))$">
+    Header always set Cache-Control "public, max-age=86400"
+  </FilesMatch>
+</IfModule>

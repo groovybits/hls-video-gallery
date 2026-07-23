@@ -1,0 +1,29 @@
+[Unit]
+Description=HLS Video Gallery (@@INSTANCE_ID@@) optional visual tag analyzer
+After=local-fs.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@OWNER@@
+Environment=VIDEO_LIBRARY_ROOT=@@DOCUMENT_ROOT@@
+Environment=VIDEO_ANALYZER_TAGS=@@DOCUMENT_ROOT@@/data/content-tags.json
+Environment=HF_HOME=@@ANALYZER_CACHE@@
+Environment=VIDEO_ANALYZER_THREADS=@@ANALYZER_THREADS@@
+Environment=VIDEO_ANALYZER_MAX_LOAD=@@ANALYZER_MAX_LOAD@@
+Environment=VIDEO_ANALYZER_THUMB_STRIDE=3
+Environment=VIDEO_ANALYZER_MAX_FRAMES=72
+Environment=VIDEO_ANALYZER_IMAGE_BATCH=8
+Environment=VIDEO_ANALYZER_RUN_INTERVAL_SECONDS=@@ANALYZER_INTERVAL@@
+ExecStart=/opt/hls-video-gallery-analyzer/bin/python @@DOCUMENT_ROOT@@/_tools/content_analyzer.py --root @@DOCUMENT_ROOT@@ --items @@ANALYZER_ITEMS@@
+Nice=19
+CPUWeight=1
+CPUQuota=50%
+IOWeight=1
+IOSchedulingClass=idle
+MemoryHigh=2G
+MemoryMax=3G
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=@@DOCUMENT_ROOT@@/data @@ANALYZER_CACHE@@

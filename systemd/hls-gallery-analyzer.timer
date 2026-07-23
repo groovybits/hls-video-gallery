@@ -1,0 +1,13 @@
+[Unit]
+Description=Check HLS Video Gallery (@@INSTANCE_ID@@) visual-tag queue
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=@@ANALYZER_INTERVAL@@s
+RandomizedDelaySec=45s
+AccuracySec=15s
+Persistent=true
+Unit=hls-gallery-@@INSTANCE_ID@@-analyzer.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,29 @@
+# Local configuration and secrets
+/config/gallery.json
+/config/users.txt
+/config/bunny.env
+/config/profile.*
+/config/social-card.*
+
+# Generated installation staging
+/build/
+/dist/
+
+# Runtime data if a site tree is copied back into the repository
+/site/cache/*
+!/site/cache/.htaccess
+/site/media/*
+!/site/media/.htaccess
+!/site/media/PUT-VIDEOS-HERE.txt
+/site/data/*
+!/site/data/.htaccess
+!/site/data/catalog.json
+!/site/data/content-index.json
+!/site/data/content-overrides.json
+
+# Local/editor files
+.DS_Store
+__pycache__/
+*.py[cod]
+*.log
+*.tmp

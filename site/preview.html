@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="@@LANGUAGE@@">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="@@THEME_COLOR@@">
+  <meta name="description" content="@@DESCRIPTION@@">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="@@OWNER_NAME@@">
+  <meta property="og:title" content="@@GALLERY_NAME@@">
+  <meta property="og:description" content="@@DESCRIPTION@@">
+  <meta property="og:url" content="@@PUBLIC_BASE_URL@@/">
+  <meta property="og:image" content="@@PREVIEW_IMAGE_URL@@">
+  <meta property="og:image:secure_url" content="@@PREVIEW_IMAGE_URL@@">
+  <meta property="og:image:alt" content="@@GALLERY_NAME@@">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="@@GALLERY_NAME@@">
+  <meta name="twitter:description" content="@@DESCRIPTION@@">
+  <meta name="twitter:image" content="@@PREVIEW_IMAGE_URL@@">
+
+  <title>@@GALLERY_NAME@@</title>
+  <link rel="canonical" href="@@PUBLIC_BASE_URL@@/">
+  <link rel="image_src" href="@@PREVIEW_IMAGE_URL@@">
+  <link rel="stylesheet" href="assets/preview.css?v=@@APP_VERSION@@">
+  <link rel="stylesheet" href="assets/theme.css?v=@@APP_VERSION@@">
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <header class="preview-header">
+    <a class="preview-brand" href="@@MAIN_SITE_URL@@" aria-label="@@OWNER_NAME@@ home">
+      <span class="brand-gem" aria-hidden="true">▶</span>
+      <span>
+        <strong>@@OWNER_NAME@@</strong>
+        <small>@@HEADER_SUBTITLE@@</small>
+      </span>
+    </a>
+    <a class="home-link" href="@@MAIN_SITE_URL@@">@@MAIN_SITE_LABEL@@</a>
+  </header>
+
+  <main>
+    <section class="teaser" aria-labelledby="preview-title">
+      <div class="teaser-art" aria-hidden="true" data-profile="@@PROFILE_URL@@">
+        <div class="portrait-frame">
+          <img src="@@PREVIEW_IMAGE_URL@@" alt="">
+        </div>
+        <span class="sparkle sparkle-one">✦</span>
+        <span class="sparkle sparkle-two">✦</span>
+      </div>
+
+      <div class="teaser-copy">
+        <p class="eyebrow"><span></span> @@HERO_EYEBROW@@</p>
+        <h1 id="preview-title">@@HERO_TITLE@@</h1>
+        <p class="intro">@@HERO_BODY@@</p>
+
+        <div class="entry-row">
+          <a class="enter-button" href="index.html">
+            <span>Enter gallery</span>
+            <span aria-hidden="true">→</span>
+          </a>
+          <p class="access-note"><span aria-hidden="true">◆</span> Username and password may be required</p>
+        </div>
+
+        <ul class="features" aria-label="Gallery features">
+          <li><span aria-hidden="true">◆</span> Controlled access</li>
+          <li><span aria-hidden="true">▶</span> HLS streaming</li>
+          <li><span aria-hidden="true">✦</span> Phone friendly</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>© @@OWNER_NAME@@</span>
+    <a href="@@MAIN_SITE_URL@@">@@MAIN_SITE_LABEL@@</a>
+  </footer>
+
+  <script src="assets/preview.js?v=@@APP_VERSION@@"></script>
+</body>
+</html>

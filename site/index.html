@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="@@LANGUAGE@@">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="@@THEME_COLOR@@">
+  <meta name="description" content="@@DESCRIPTION@@">
+  <title>@@GALLERY_NAME@@</title>
+  <link rel="stylesheet" href="assets/app.css?v=@@APP_VERSION@@">
+  <link rel="stylesheet" href="assets/theme.css?v=@@APP_VERSION@@">
+</head>
+<body>
+  <a class="skip-link" href="#app">Skip to videos</a>
+  <header class="site-header">
+    <a class="brand" href="@@MAIN_SITE_URL@@" aria-label="Back to @@OWNER_NAME@@'s main site">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>
+        <strong>@@OWNER_NAME@@</strong>
+        <small>@@HEADER_SUBTITLE@@</small>
+      </span>
+    </a>
+    <div class="header-actions">
+      <a class="main-site-link" href="@@MAIN_SITE_URL@@">@@MAIN_SITE_LABEL@@</a>
+      <div class="header-status" id="header-status" aria-live="polite">Loading library…</div>
+    </div>
+  </header>
+
+  <main id="app" tabindex="-1">
+    <section class="loading-state" aria-label="Loading video library">
+      <span class="loader" aria-hidden="true"></span>
+      <h1>@@LOADING_TITLE@@</h1>
+      <p>@@LOADING_BODY@@</p>
+    </section>
+  </main>
+
+  <noscript>
+    <div class="noscript">JavaScript is required to browse and play this HLS video library.</div>
+  </noscript>
+
+  <footer class="site-footer">
+    <span>@@GALLERY_NAME@@</span>
+    <span id="catalog-updated"></span>
+  </footer>
+
+  <script src="assets/config.js?v=@@APP_VERSION@@"></script>
+  <script src="assets/hls.min.js?v=1.6.16"></script>
+  <script src="assets/app.js?v=@@APP_VERSION@@"></script>
+</body>
+</html>

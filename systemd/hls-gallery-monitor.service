@@ -1,0 +1,21 @@
+[Unit]
+Description=HLS Video Gallery (@@INSTANCE_ID@@) encoding telemetry
+After=local-fs.target
+
+[Service]
+Type=simple
+User=@@OWNER@@
+Environment=VIDEO_LIBRARY_ROOT=@@DOCUMENT_ROOT@@
+ExecStart=/usr/bin/python3 @@DOCUMENT_ROOT@@/_tools/encode_monitor.py --root @@DOCUMENT_ROOT@@
+Restart=always
+RestartSec=2
+Nice=10
+CPUWeight=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=@@DOCUMENT_ROOT@@/data
+
+[Install]
+WantedBy=multi-user.target

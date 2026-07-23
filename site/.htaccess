@@ -1,0 +1,62 @@
+Options -Indexes
+DirectoryIndex @@DIRECTORY_INDEX@@
+
+# Never send Basic Auth credentials over an unencrypted connection.
+RewriteEngine On
+RewriteCond %{HTTPS} !=on
+RewriteCond %{HTTP:X-Forwarded-Proto} !https [NC]
+RewriteRule ^ https://@@HTTPS_HOST@@%{REQUEST_URI} [R=301,L,NE]
+
+# Clean, opaque one-video share URLs. The token is validated by share.php.
+RewriteRule ^watch/([^/]+)/?$ share.php?t=$1 [END,QSA]
+
+# Protect the application, generated thumbnails, telemetry, and HLS segments.
+@@AUTH_BLOCK@@
+
+@@PUBLIC_LANDING_RULES@@
+@@PUBLIC_SHARE_RULES@@
+
+<FilesMatch "^@@PUBLIC_PHP_PATTERN@@\.php$">
+  AuthType None
+  Require all granted
+</FilesMatch>
+
+<FilesMatch "^(?:config\.js|theme\.css|hls\.min\.js@@PUBLIC_FILE_PATTERN@@)$">
+  AuthType None
+  Require all granted
+</FilesMatch>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Referrer-Policy "same-origin"
+  Header always set X-Robots-Tag "noindex, nofollow, noarchive"
+  Header always set Cache-Control "private"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+  Header always set Cross-Origin-Resource-Policy "same-origin"
+  Header always set Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:@@CSP_CDN@@; media-src 'self' blob:@@CSP_CDN@@; connect-src 'self'@@CSP_CDN@@; worker-src 'self' blob:"
+
+  <FilesMatch "^(?:share|share-media|share-image)\.php$">
+    Header always set Cache-Control "no-store, max-age=0"
+    Header always set Referrer-Policy "no-referrer"
+  </FilesMatch>
+
+  <FilesMatch "^preview\.html$">
+    Header always set Cache-Control "public, max-age=300"
+  </FilesMatch>
+
+  <FilesMatch "^(?:preview\.css|preview\.js|default-social-card\.png|brand-profile\.(?:png|jpe?g|webp)|social-card\.(?:png|jpe?g|webp))$">
+    Header always set Cache-Control "public, max-age=86400"
+  </FilesMatch>
+</IfModule>
+
+AddType application/vnd.apple.mpegurl .m3u8
+AddType video/mp2t .ts
+AddType video/mp4 .mp4 .m4v
+AddType video/webm .webm
+AddType video/quicktime .mov
+AddType video/x-matroska .mkv
+
+<FilesMatch "(^\.|\.(?:py|lock|log|tmp)$)">
+  Require all denied
+</FilesMatch>

@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "tags": [
+    {
+      "key": "talking",
+      "label": "Talking",
+      "group": "Activity",
+      "threshold": 0.76,
+      "filename_patterns": ["talk", "talking", "conversation", "interview", "podcast"],
+      "positive": ["a person talking directly to a camera", "an interview or conversation"],
+      "negative": ["a person not talking", "a physical activity without conversation"]
+    },
+    {
+      "key": "tutorial",
+      "label": "Tutorial",
+      "group": "Activity",
+      "threshold": 0.76,
+      "filename_patterns": ["tutorial", "lesson", "how to", "walkthrough", "guide"],
+      "positive": ["a person teaching or demonstrating a process", "a step by step tutorial"],
+      "negative": ["a performance without instruction", "an ordinary portrait"]
+    },
+    {
+      "key": "performance",
+      "label": "Performance",
+      "group": "Activity",
+      "threshold": 0.75,
+      "filename_patterns": ["performance", "performing", "show", "concert", "dance"],
+      "positive": ["a person performing for a camera or audience", "a staged music or dance performance"],
+      "negative": ["an ordinary conversation", "a person sitting still"]
+    },
+    {
+      "key": "gaming",
+      "label": "Gaming",
+      "group": "Activity",
+      "threshold": 0.77,
+      "filename_patterns": ["game", "gaming", "gameplay", "stream"],
+      "positive": ["a person playing a video game", "video game footage or a gaming stream"],
+      "negative": ["a person not playing a game", "an outdoor activity"]
+    },
+    {
+      "key": "cooking",
+      "label": "Cooking",
+      "group": "Activity",
+      "threshold": 0.76,
+      "filename_patterns": ["cook", "cooking", "recipe", "kitchen", "bake", "baking"],
+      "positive": ["a person preparing food in a kitchen", "cooking or baking food"],
+      "negative": ["a person away from a kitchen", "food not being prepared"]
+    },
+    {
+      "key": "fitness",
+      "label": "Fitness",
+      "group": "Activity",
+      "threshold": 0.76,
+      "filename_patterns": ["fitness", "workout", "exercise", "training", "yoga"],
+      "positive": ["a person exercising or working out", "fitness training or yoga"],
+      "negative": ["a person resting or talking without exercise", "an ordinary portrait"]
+    },
+    {
+      "key": "solo",
+      "label": "Solo",
+      "group": "People",
+      "threshold": 0.74,
+      "filename_patterns": ["solo", "alone"],
+      "positive": ["one person alone in the scene", "a solo presentation by one person"],
+      "negative": ["multiple people together", "a crowd or group"]
+    },
+    {
+      "key": "pair",
+      "label": "Pair",
+      "group": "People",
+      "threshold": 0.75,
+      "filename_patterns": ["pair", "duo", "couple", "two people"],
+      "positive": ["two people together in the scene", "a pair of people together"],
+      "negative": ["one person alone", "three or more people"]
+    },
+    {
+      "key": "group",
+      "label": "Group",
+      "group": "People",
+      "threshold": 0.78,
+      "filename_patterns": ["group", "team", "party", "friends"],
+      "positive": ["three or more people together", "a group or crowd of people"],
+      "negative": ["one person alone", "only two people"]
+    },
+    {
+      "key": "indoor",
+      "label": "Indoor",
+      "group": "Setting",
+      "threshold": 0.76,
+      "filename_patterns": ["indoor", "studio", "room"],
+      "positive": ["a scene inside a room or studio", "an indoor setting"],
+      "negative": ["a scene outdoors", "an open natural landscape"]
+    },
+    {
+      "key": "outdoor",
+      "label": "Outdoor",
+      "group": "Setting",
+      "threshold": 0.76,
+      "filename_patterns": ["outdoor", "outside", "garden", "park", "beach", "hike"],
+      "positive": ["a scene outdoors in daylight", "people outside in a natural setting"],
+      "negative": ["a scene inside a room", "an indoor studio"]
+    },
+    {
+      "key": "pov",
+      "label": "POV",
+      "group": "Framing",
+      "threshold": 0.79,
+      "filename_patterns": ["pov", "first person"],
+      "positive": ["a scene filmed from first person point of view", "a first person camera view"],
+      "negative": ["a third person camera view", "a full body view from a distance"]
+    },
+    {
+      "key": "closeup",
+      "label": "Close-up",
+      "group": "Framing",
+      "threshold": 0.76,
+      "filename_patterns": ["closeup", "close up", "macro"],
+      "positive": ["a close-up camera crop", "a subject filmed very close to the camera"],
+      "negative": ["a wide view", "a distant view of a room"]
+    }
+  ]
+}

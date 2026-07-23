@@ -1,0 +1,10 @@
+Options -Indexes
+
+<IfModule mod_headers.c>
+  # Cache paths contain the source signature, so their contents never change.
+  Header always set Cache-Control "private, max-age=31536000, immutable"
+</IfModule>
+
+<FilesMatch "^(?:metadata|state)\.json$">
+  Require all denied
+</FilesMatch>

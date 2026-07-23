@@ -1,0 +1,4 @@
+# One username and plaintext password per line.
+# Copy this file to config/users.txt, change it, and keep it out of Git.
+# Colons are not allowed inside either value.
+viewer:replace-this-password

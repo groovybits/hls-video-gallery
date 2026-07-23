@@ -101,6 +101,35 @@ class MacManagerTests(unittest.TestCase):
         self.assertEqual(newest[0], self.manager.select_item(newest, "1"))
         self.assertEqual(items[1], self.manager.select_item(items, "third"))
 
+    def test_ssh_control_path_never_uses_spaced_config_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            old_config_path = self.manager.CONFIG_PATH
+            old_control_directory = self.manager.CONTROL_DIRECTORY
+            self.manager.CONFIG_PATH = (
+                Path(temporary) / "Library" / "Application Support" / "manager.json"
+            )
+            self.manager.CONTROL_DIRECTORY = Path(temporary) / ".cache" / "manager"
+            try:
+                config = {
+                    "host": "videos.example.com",
+                    "ssh_user": "gallery-owner",
+                    "remote_root": "/var/www/html/videos",
+                    "identity_file": "",
+                }
+                for command in (
+                    self.manager.ssh_base(config),
+                    self.manager.scp_base(config),
+                ):
+                    option = next(
+                        value for value in command
+                        if value.startswith("ControlPath=")
+                    )
+                    self.assertNotIn(" ", option)
+                    self.assertNotIn("Application Support", option)
+            finally:
+                self.manager.CONFIG_PATH = old_config_path
+                self.manager.CONTROL_DIRECTORY = old_control_directory
+
 
 if __name__ == "__main__":
     unittest.main()

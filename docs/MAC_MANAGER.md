@@ -21,7 +21,9 @@ settings, but no SSH or gallery passwords, in:
 
 SSH connection sharing remains active for ten minutes, so password-based
 accounts normally prompt once per management session rather than once per file.
-SSH keys continue to work without a password prompt.
+SSH keys continue to work without a password prompt. The private control socket
+uses `~/.cache/hls-gallery-manager`, whose path deliberately contains no spaces
+for compatibility with OpenSSH's option parser.
 
 ## Install
 

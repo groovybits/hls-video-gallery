@@ -2,6 +2,11 @@
 
 All notable changes are documented here.
 
+## 1.2.1 — 2026-07-23
+
+- Fixed macOS SSH and SCP startup failures caused by placing `ControlPath` under
+  the space-containing `Library/Application Support` directory.
+
 ## 1.2.0 — 2026-07-23
 
 - Added a double-clickable macOS collection manager.

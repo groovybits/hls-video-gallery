@@ -14,7 +14,7 @@ import sys
 from urllib.parse import urlparse
 
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 PIPELINE_VERSION = 6
 PRESETS = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}

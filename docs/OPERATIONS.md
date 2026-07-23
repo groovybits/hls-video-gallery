@@ -106,7 +106,8 @@ The `cache/` directory can be recreated from sources, so it is optional. Catalog
 and visual-analysis JSON can also be rebuilt, though saving them avoids work.
 Objective quality output under `data/quality/` and `data/quality-index.json` can
 also be regenerated, but backing it up can avoid many hours of full-frame
-measurement.
+measurement. `data/quality-cards.json` is a small derived browser projection and
+does not need to be backed up separately.
 
 Never publish a backup containing Bunny credentials or the Basic Auth file.
 

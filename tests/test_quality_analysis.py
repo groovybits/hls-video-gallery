@@ -58,13 +58,16 @@ def quality_record(worker, key, signature, elapsed=10, duration=10):
     }
 
 
-def create_report_artifacts(root, key):
+def create_report_artifacts(root, key, report=None):
     report_root = root / "data" / "quality" / key
     report_root.mkdir(parents=True, exist_ok=True)
     artifacts = {}
     for filename in ("report.json", "frames.csv", "report.html"):
         path = report_root / filename
-        path.write_text(filename + "\n", encoding="utf-8")
+        if filename == "report.json" and report is not None:
+            path.write_text(json.dumps(report), encoding="utf-8")
+        else:
+            path.write_text(filename + "\n", encoding="utf-8")
         stat_result = path.stat()
         artifacts[filename] = {
             "size": stat_result.st_size,
@@ -421,6 +424,73 @@ class QualityWorkerTests(unittest.TestCase):
         self.assertEqual(0.0, payload["percent"])
         self.assertEqual(1, payload["waiting_content_count"])
 
+    def test_existing_report_metrics_are_backfilled_without_reanalysis(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            key = cache_key(16)
+            item = catalog_item("video", key, 1)
+            signature = "current"
+            report = {
+                "gallery": {"video_id": "video", "cache_key": key},
+                "hdr_normalized": True,
+                "summary": {
+                    "score": 87.654,
+                    "band": "Very good",
+                    "vmaf_standard": 91.234,
+                    "vmaf_phone": 96.5,
+                    "psnr_y": 42.345,
+                    "ssim": 0.987654321,
+                    "phash_similarity": 97.456,
+                    "temporal_consistency": 98.765,
+                },
+            }
+            record = quality_record(self.worker, key, signature)
+            record["analyzed_at"] = "2026-07-23T12:00:00Z"
+            record["artifacts"] = create_report_artifacts(root, key, report)
+            write_json(root / "data" / "catalog.json", {"items": [item]})
+            write_json(root / "data" / "quality-index.json", {
+                "items": {"video": record},
+            })
+
+            _, _, records, _, pending, _, _ = self.worker.queue_state(
+                root,
+                {"signature": signature, "require_content_analysis": False},
+            )
+
+            self.assertEqual([], pending)
+            self.assertEqual(87.65, records["video"]["summary"]["score"])
+            self.assertEqual(91.23, records["video"]["summary"]["vmaf_standard"])
+            self.assertEqual(0.987654, records["video"]["summary"]["ssim"])
+            self.assertTrue(records["video"]["hdr_normalized"])
+
+    def test_idle_progress_includes_the_newest_current_result(self):
+        first = catalog_item("first", cache_key(17), 1)
+        second = catalog_item("second", cache_key(18), 2)
+        records = {
+            "first": {
+                "cache_key": first["cache_key"],
+                "analyzed_at": "2026-07-23T12:00:00Z",
+                "score": 70,
+                "band": "Good",
+                "summary": {"score": 70, "band": "Good", "vmaf_standard": 75},
+            },
+            "second": {
+                "cache_key": second["cache_key"],
+                "analyzed_at": "2026-07-23T13:00:00Z",
+                "score": 92,
+                "band": "Excellent",
+                "summary": {"score": 92, "band": "Excellent", "vmaf_standard": 95},
+            },
+        }
+
+        payload = self.worker.progress_payload(
+            "idle", [first, second], records, [], [], [],
+        )
+
+        self.assertEqual("second", payload["last_result"]["video_id"])
+        self.assertEqual(92, payload["last_result"]["score"])
+        self.assertEqual(95, payload["last_result"]["summary"]["vmaf_standard"])
+
     def test_pruning_removes_only_recognized_stale_report_directories(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -487,6 +557,11 @@ class QualityWorkerTests(unittest.TestCase):
                 "percent": 35.0,
                 "upcoming": ["next", "later"],
                 "eta_seconds": 900,
+                "last_result": {
+                    "video_id": "complete",
+                    "score": 91.2,
+                    "band": "Excellent",
+                },
             })
             write_json(data / "catalog.json", {
                 "scan": {"in_progress": True},
@@ -526,6 +601,7 @@ class QualityWorkerTests(unittest.TestCase):
             self.assertEqual(2, progress["waiting_content_count"])
             self.assertEqual(["next", "later"], progress["upcoming"])
             self.assertEqual(900, progress["eta_seconds"])
+            self.assertEqual("complete", progress["last_result"]["video_id"])
 
     def test_scanner_lock_prevents_catalog_mutation_and_pruning(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -547,6 +623,11 @@ class QualityWorkerTests(unittest.TestCase):
                 "percent": 35.0,
                 "upcoming": ["next", "later"],
                 "eta_seconds": 900,
+                "last_result": {
+                    "video_id": "complete",
+                    "score": 91.2,
+                    "band": "Excellent",
+                },
             })
             write_json(data / "catalog.json", {
                 "scan": {"in_progress": False},
@@ -581,6 +662,7 @@ class QualityWorkerTests(unittest.TestCase):
             self.assertEqual(2, progress["waiting_content_count"])
             self.assertEqual(["next", "later"], progress["upcoming"])
             self.assertEqual(900, progress["eta_seconds"])
+            self.assertEqual("complete", progress["last_result"]["video_id"])
 
     def test_targeted_force_keeps_the_global_queue_visible(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -611,7 +693,14 @@ class QualityWorkerTests(unittest.TestCase):
                 create_report_artifacts(root, item["cache_key"])
                 return {
                     "analyzer_version": "test",
-                    "summary": {"score": 88.0, "band": "Very good"},
+                    "summary": {
+                        "score": 88.0,
+                        "band": "Very good",
+                        "vmaf_standard": 91.2,
+                        "psnr_y": 39.4,
+                        "ssim": 0.9821,
+                        "phash_similarity": 97.5,
+                    },
                 }, 1.0
 
             with mock.patch.object(
@@ -625,6 +714,7 @@ class QualityWorkerTests(unittest.TestCase):
 
             self.assertEqual(0, result)
             index = json.loads((data / "quality-index.json").read_text(encoding="utf-8"))
+            cards = json.loads((data / "quality-cards.json").read_text(encoding="utf-8"))
             progress = json.loads(
                 (data / "quality-analysis-progress.json").read_text(encoding="utf-8")
             )
@@ -633,6 +723,34 @@ class QualityWorkerTests(unittest.TestCase):
             self.assertEqual(2, progress["pending_count"])
             self.assertEqual(3, progress["catalog_count"])
             self.assertEqual(["One", "Three"], progress["upcoming"])
+            self.assertEqual(88.0, index["items"]["two"]["summary"]["score"])
+            self.assertEqual(91.2, index["items"]["two"]["summary"]["vmaf_standard"])
+            self.assertEqual("two", index["last_result"]["video_id"])
+            self.assertEqual("two", progress["last_result"]["video_id"])
+            self.assertEqual(1, cards["analyzed_count"])
+            self.assertEqual(2, cards["pending_count"])
+            self.assertEqual(
+                {
+                    "score": 88.0,
+                    "band": "Very good",
+                    "vmaf_standard": 91.2,
+                    "ssim": 0.9821,
+                    "psnr_y": 39.4,
+                    "phash_similarity": 97.5,
+                },
+                cards["items"]["two"]["summary"],
+            )
+            self.assertNotIn("artifacts", cards["items"]["two"])
+            self.assertNotIn("settings_signature", cards)
+            self.assertEqual("two", cards["last_result"]["video_id"])
+            self.assertEqual(
+                0o600,
+                (data / "quality-index.json").stat().st_mode & 0o777,
+            )
+            self.assertEqual(
+                0o644,
+                (data / "quality-cards.json").stat().st_mode & 0o777,
+            )
 
 
 class QualityConfigurationTests(unittest.TestCase):

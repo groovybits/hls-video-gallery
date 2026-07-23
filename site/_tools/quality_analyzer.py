@@ -10,6 +10,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -32,6 +33,24 @@ OLD_DIRECTORY = re.compile(
 )
 REPORT_ARTIFACTS = ("report.json", "frames.csv", "report.html")
 ABANDONED_BUILD_SECONDS = 24 * 60 * 60
+SUMMARY_METRICS = (
+    ("vmaf_standard", 2),
+    ("vmaf_phone", 2),
+    ("psnr_y", 2),
+    ("psnr_normalized", 2),
+    ("ssim", 6),
+    ("ssim_normalized", 2),
+    ("phash_similarity", 2),
+    ("temporal_consistency", 2),
+)
+CARD_SUMMARY_FIELDS = (
+    "score",
+    "band",
+    "vmaf_standard",
+    "ssim",
+    "psnr_y",
+    "phash_similarity",
+)
 
 
 def utc_iso(timestamp=None):
@@ -85,6 +104,14 @@ def number(value, fallback=0.0):
         return fallback
 
 
+def finite_number(value):
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
 def integer(value, fallback=0):
     try:
         return int(value)
@@ -94,6 +121,48 @@ def integer(value, fallback=0):
 
 def truthy(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def compact_report_summary(report):
+    """Project the analyzer report into the small metric set used by indexes."""
+    if not isinstance(report, dict):
+        return {}
+    source = report.get("summary")
+    if not isinstance(source, dict):
+        source = {}
+    projected = {}
+    score = finite_number(
+        source.get("score")
+        if source.get("score") is not None
+        else report.get("overall_score")
+    )
+    if score is not None:
+        projected["score"] = round(score, 2)
+    band = str(
+        source.get("band")
+        or report.get("quality_band")
+        or report.get("band")
+        or ""
+    ).strip()
+    if band:
+        projected["band"] = band
+    for field, precision in SUMMARY_METRICS:
+        value = finite_number(source.get(field))
+        if value is not None:
+            projected[field] = round(value, precision)
+    return projected
+
+
+def report_is_hdr_normalized(report):
+    if not isinstance(report, dict):
+        return False
+    if report.get("hdr_normalized") is True or report.get("hdr_normalization") is True:
+        return True
+    capabilities = report.get("capabilities")
+    return (
+        isinstance(capabilities, dict)
+        and capabilities.get("hdr_normalization") is True
+    )
 
 
 def process_cmdlines():
@@ -257,6 +326,39 @@ def report_artifacts_ready(root, item, record):
     return True
 
 
+def hydrate_record_summary(root, item, record):
+    """Backfill compact metrics from an existing report without remeasurement."""
+    if not isinstance(record, dict):
+        return record
+    summary = record.get("summary")
+    required = {"score", "vmaf_standard", "psnr_y", "ssim", "phash_similarity"}
+    if isinstance(summary, dict) and required.issubset(summary):
+        return record
+    report = load_json(
+        root / "data" / "quality" / str(item.get("cache_key") or "") / "report.json",
+        None,
+    )
+    if not isinstance(report, dict):
+        return record
+    gallery = report.get("gallery")
+    if isinstance(gallery, dict):
+        if gallery.get("video_id") and str(gallery["video_id"]) != str(item.get("id")):
+            return record
+        if gallery.get("cache_key") and gallery["cache_key"] != item.get("cache_key"):
+            return record
+    compact = compact_report_summary(report)
+    if not compact:
+        return record
+    enriched = dict(record)
+    enriched["summary"] = compact
+    if compact.get("score") is not None:
+        enriched["score"] = compact["score"]
+    if compact.get("band"):
+        enriched["band"] = compact["band"]
+    enriched["hdr_normalized"] = report_is_hdr_normalized(report)
+    return enriched
+
+
 def queue_state(root, configuration, force=False):
     catalog = load_json(root / "data" / "catalog.json", None)
     if not isinstance(catalog, dict) or not isinstance(catalog.get("items"), list):
@@ -279,6 +381,10 @@ def queue_state(root, configuration, force=False):
             and valid_record(by_id[item_id], record, configuration)
             and report_artifacts_ready(root, by_id[item_id], record)
         )
+    }
+    records = {
+        item_id: hydrate_record_summary(root, by_id[item_id], record)
+        for item_id, record in records.items()
     }
     content_index = load_json(root / "data" / "content-index.json", {})
     content_analyzer_version = (
@@ -364,6 +470,96 @@ def display_name(item):
     return str(item.get("title") or item.get("source_relative") or item.get("id") or "Untitled video")
 
 
+def latest_result(items, records):
+    if not records:
+        return None
+    by_id = {str(item.get("id")): item for item in items if item.get("id")}
+    candidates = []
+    for item_id, record in records.items():
+        item = by_id.get(str(item_id))
+        if not item or not isinstance(record, dict):
+            continue
+        if record.get("cache_key") != item.get("cache_key"):
+            continue
+        candidates.append((str(record.get("analyzed_at") or ""), str(item_id), item, record))
+    if not candidates:
+        return None
+    _timestamp, item_id, item, record = max(candidates)
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    result = {
+        "video_id": item_id,
+        "cache_key": record.get("cache_key"),
+        "title": display_name(item),
+        "source_relative": item.get("source_relative") or "",
+        "analyzed_at": record.get("analyzed_at"),
+        "analysis_seconds": record.get("analysis_seconds"),
+        "duration_seconds": record.get("duration_seconds"),
+        "report_url": record.get("report_url"),
+        "score": summary.get("score", record.get("score")),
+        "band": summary.get("band", record.get("band")),
+        "summary": summary,
+        "hdr_normalized": record.get("hdr_normalized") is True,
+    }
+    return {key: value for key, value in result.items() if value is not None}
+
+
+def quality_card_summary(record):
+    """Return only the score fields needed by gallery listing cards."""
+    if not isinstance(record, dict):
+        return {}
+    source = record.get("summary")
+    if not isinstance(source, dict):
+        source = {}
+    merged = dict(source)
+    if merged.get("score") is None and record.get("score") is not None:
+        merged["score"] = record["score"]
+    if not merged.get("band") and record.get("band"):
+        merged["band"] = record["band"]
+    compact = compact_report_summary({"summary": merged})
+    return {
+        field: compact[field]
+        for field in CARD_SUMMARY_FIELDS
+        if compact.get(field) is not None
+    }
+
+
+def quality_cards_payload(items, records, pending_count, updated_at=None):
+    """Build the compact authenticated projection polled by listing pages."""
+    cards = {}
+    for item_id, record in records.items():
+        if not isinstance(record, dict):
+            continue
+        cards[str(item_id)] = {
+            "cache_key": record.get("cache_key"),
+            "analyzed_at": record.get("analyzed_at"),
+            "summary": quality_card_summary(record),
+        }
+        cards[str(item_id)] = {
+            key: value
+            for key, value in cards[str(item_id)].items()
+            if value is not None
+        }
+    payload = {
+        "schema_version": 1,
+        "worker_version": WORKER_VERSION,
+        "updated_at": updated_at or utc_iso(),
+        "catalog_count": len(items),
+        "analyzed_count": len(records),
+        "pending_count": pending_count,
+        "items": cards,
+    }
+    last = latest_result(items, records)
+    if isinstance(last, dict):
+        last_card = {
+            key: last.get(key)
+            for key in ("video_id", "cache_key", "title", "analyzed_at")
+            if last.get(key) is not None
+        }
+        last_card["summary"] = quality_card_summary(last)
+        payload["last_result"] = last_card
+    return payload
+
+
 def progress_payload(state, items, records, pending, waiting_content, cooling_down, **extra):
     catalog_total = len(items)
     payload = {
@@ -381,22 +577,37 @@ def progress_payload(state, items, records, pending, waiting_content, cooling_do
         "percent": clamp_percent(100.0 * len(records) / catalog_total) if catalog_total else 100.0,
         "upcoming": [display_name(item) for item in pending + cooling_down],
     }
+    last_result = extra.pop("last_result", latest_result(items, records))
+    if isinstance(last_result, dict):
+        payload["last_result"] = last_result
     payload.update(forecast(records, pending + cooling_down))
     payload.update(extra)
     return payload
 
 
 def publish_index(path, items, records, configuration, pending_count):
-    atomic_write_json(path, {
+    updated_at = utc_iso()
+    payload = {
         "schema_version": 1,
         "worker_version": WORKER_VERSION,
         "settings_signature": configuration["signature"],
-        "updated_at": utc_iso(),
+        "updated_at": updated_at,
         "catalog_count": len(items),
         "analyzed_count": len(records),
         "pending_count": pending_count,
         "items": records,
-    }, mode=0o600)
+    }
+    last_result = latest_result(items, records)
+    if isinstance(last_result, dict):
+        payload["last_result"] = last_result
+    # The full index is worker state and can include artifact metadata. Keep it
+    # private; the browser polls the deliberately small projection beside it.
+    atomic_write_json(path, payload, mode=0o600)
+    atomic_write_json(
+        path.with_name("quality-cards.json"),
+        quality_cards_payload(items, records, pending_count, updated_at),
+        mode=0o644,
+    )
 
 
 def prune_reports(quality_root, keep_keys, now=None):
@@ -447,7 +658,7 @@ def acquire_lock(path):
 
 
 def report_record(root, report, item, configuration, elapsed):
-    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    summary = compact_report_summary(report)
     report_root = root / "data" / "quality" / str(item["cache_key"])
     artifacts = {}
     for filename in REPORT_ARTIFACTS:
@@ -463,8 +674,10 @@ def report_record(root, report, item, configuration, elapsed):
         "analyzed_at": utc_iso(),
         "analysis_seconds": round(elapsed, 1),
         "duration_seconds": round(number(item.get("duration_seconds")), 3),
-        "score": round(number(summary.get("score") or report.get("overall_score")), 2),
-        "band": str(summary.get("band") or report.get("quality_band") or ""),
+        "score": summary.get("score"),
+        "band": str(summary.get("band") or ""),
+        "summary": summary,
+        "hdr_normalized": report_is_hdr_normalized(report),
         "report_url": "data/quality/{}/report.json".format(item["cache_key"]),
         "artifacts": artifacts,
     }
@@ -633,6 +846,18 @@ def status_text(payload, include_all=False, include_command=False):
         )
         if include_command and engine.get("command"):
             parts.append("Command: {}".format(engine["command"]))
+    last_result = payload.get("last_result") if isinstance(payload.get("last_result"), dict) else {}
+    if last_result and not current:
+        score = finite_number(last_result.get("score"))
+        score_text = " — {:.1f}".format(score) if score is not None else ""
+        band_text = " ({})".format(last_result.get("band")) if last_result.get("band") else ""
+        parts.append(
+            "Last: {}{}{}".format(
+                last_result.get("title") or last_result.get("source_relative") or "video",
+                score_text,
+                band_text,
+            )
+        )
     upcoming = payload.get("upcoming") if isinstance(payload.get("upcoming"), list) else []
     if upcoming:
         limit = len(upcoming) if include_all else min(5, len(upcoming))
@@ -697,6 +922,8 @@ def catalog_wait_payload(progress_path):
     ):
         if key in previous:
             payload[key] = previous[key]
+    if isinstance(previous.get("last_result"), dict):
+        payload["last_result"] = previous["last_result"]
     return payload
 
 

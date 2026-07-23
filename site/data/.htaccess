@@ -9,6 +9,6 @@ RewriteRule ^(?!quality/[0-9a-f]{18}--[0-9a-f]{14}/(?:report\.json|frames\.csv|r
   Header always set Cache-Control "private, no-store, max-age=0"
 </IfModule>
 
-<FilesMatch "^(?!(catalog|encode-progress|content-index|content-analysis-progress|quality-analysis-progress|bunny-sync-status)\.json$|encode-preview\.jpg$|report\.json$|frames\.csv$|report\.html$).+">
+<FilesMatch "^(?!(catalog|encode-progress|content-index|content-analysis-progress|quality-cards|quality-analysis-progress|bunny-sync-status)\.json$|encode-preview\.jpg$|report\.json$|frames\.csv$|report\.html$).+">
   Require all denied
 </FilesMatch>

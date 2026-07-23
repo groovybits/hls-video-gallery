@@ -2,6 +2,18 @@
 
 All notable changes are documented here.
 
+## 1.3.1 — 2026-07-23
+
+- Kept the quality-analysis overview visible while its timer is idle, waiting
+  for another media task, or temporarily unable to refresh telemetry.
+- Added overall quality, Standard VMAF, SSIM, PSNR, and pHash summaries to
+  video cards using one compact authenticated summary request.
+- Kept the full worker index private and ignored late responses from overlapping
+  browser refreshes so older telemetry cannot replace newer results.
+- Added the newest completed report to idle browser and terminal status.
+- Backfilled compact summaries from existing cached reports without
+  reprocessing their source videos.
+
 ## 1.3.0 — 2026-07-23
 
 - Added an optional, low-priority post-encode objective-quality queue.

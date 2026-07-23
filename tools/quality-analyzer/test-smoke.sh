@@ -60,7 +60,9 @@ grep -q '"scenes": \[' "$temporary/report/report.json"
 grep -q '^frame,time_seconds,scene,vmaf_standard' "$temporary/report/frames.csv"
 grep -q '"active": false' "$temporary/progress.json"
 grep -q '"phase": "complete"' "$temporary/progress.json"
-grep -q '<polyline points=' "$temporary/report/report.html"
+grep -q 'name="quality-report-renderer" content="2"' "$temporary/report/report.html"
+grep -q 'id="quality-report-data"' "$temporary/report/report.html"
+grep -q 'Quality explorer' "$temporary/report/report.html"
 python3 -m json.tool "$temporary/report/report.json" >/dev/null
 python3 -m json.tool "$temporary/progress.json" >/dev/null
 python3 - "$temporary/report/report.json" <<'PY'
@@ -74,7 +76,8 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 frames = report["frames"]
 assert len(frames) == report["video"]["frames_analyzed"] == 120
 assert 1 <= len(report["timeline"]) <= 1000
-assert sum(scene["frame_count"] for scene in report["scenes"]) == len(frames)
+scene_frames = sum(scene["frame_count"] for scene in report["scenes"])
+assert scene_frames == len(frames), (scene_frames, len(frames), report["scenes"])
 assert report["video"]["width"] == 256 and report["video"]["height"] == 144
 assert report["summary"]["band"] in {"Excellent", "Very good", "Good", "Fair", "Poor"}
 assert report["settings"]["deinterlace_reference"] is False
@@ -103,7 +106,7 @@ expected_overall = 0.70 * weighted_mean + 0.30 * worst
 assert abs(report["summary"]["score"] - expected_overall) < 1e-3
 PY
 
-"$analyzer" --version | grep -q '^hls-quality-analyzer 1\.1\.0$'
+"$analyzer" --version | grep -q '^hls-quality-analyzer 1\.1\.1$'
 
 # Preserve each decoder's native time base until fps has selected its samples.
 # This specifically covers a 60 fps source compared with its 30 fps derivative,
@@ -222,6 +225,7 @@ if grep -q ' yadif ' <<<"$quality_filter_list" &&
         --deinterlace-reference >/dev/null
     python3 - "$temporary/deinterlace-report/report.json" <<'PY'
 import json
+import re
 import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     report = json.load(handle)
@@ -231,9 +235,18 @@ assert report["preprocessing"]["reference_deinterlace_filter"] == "yadif=deint=i
 assert report["preprocessing"]["distorted_deinterlace"] is False
 assert report["video"]["frames_analyzed"] == 60
 assert report["summary"]["score"] > 99
-assert "reference deinterlaced with" in open(
+with open(
     sys.argv[1].replace("report.json", "report.html"), encoding="utf-8"
-).read()
+) as handle:
+    html = handle.read()
+payload = re.search(
+    r'<script id="quality-report-data" type="application/json">(.*?)</script>',
+    html,
+    re.S,
+)
+assert payload
+embedded = json.loads(payload.group(1))
+assert embedded["report"]["preprocessing"]["reference_deinterlace"] is True
 PY
 else
     echo "SKIP: installed FFmpeg lacks yadif or tinterlace for the interlace smoke"

@@ -7,6 +7,7 @@ Type=oneshot
 User=@@OWNER@@
 Environment=VIDEO_LIBRARY_ROOT=@@DOCUMENT_ROOT@@
 Environment=VIDEO_QUALITY_BINARY=/usr/local/libexec/hls-video-gallery/hls-quality-analyzer
+Environment=VIDEO_QUALITY_REPORT_RENDERER=/usr/local/libexec/hls-video-gallery/hls-quality-report-renderer
 Environment=VIDEO_QUALITY_THREADS=@@QUALITY_THREADS@@
 Environment=VIDEO_QUALITY_MAX_LOAD=@@QUALITY_MAX_LOAD@@
 Environment=VIDEO_QUALITY_FRAME_RATE=@@QUALITY_FRAME_RATE@@

@@ -27,7 +27,8 @@ neutral and work for any private video archive.
   thumbnail, sanitized FFmpeg parameters, and the active command.
 - Optional post-encode objective quality reports with standard and Phone VMAF,
   SSIM, PSNR, 64-bit perceptual hashes, per-scene scores, and an interactive
-  scene/HLS-segment quality explorer that compares every metric over time.
+  scene/HLS-segment quality explorer that compares every metric over time in
+  both the gallery and the self-contained standalone HTML report.
 - A macOS manager for direct Photos/iCloud-original exports, safe uploads,
   server inventory, processing status, details, and guarded source deletion.
 - Apache Basic Auth with bcrypt password hashes outside the document root.
@@ -209,7 +210,7 @@ the prior run. Failed measurements use a short 30-second retry cooldown, and an
 idle or resource-waiting queue backs off to a lightweight 30-second poll.
 
 The normal dependency and application installers build the standalone C++
-analyzer when the feature is enabled:
+analyzer and detailed-report renderer when the feature is enabled:
 
 ```bash
 sudo ./scripts/install-dependencies.sh
@@ -241,7 +242,7 @@ presets/      general-purpose starting configuration
 scripts/      validation, dependency, install, user, analyzer, and release tools
 site/         source templates and runtime application
 systemd/      rendered per-instance service and timer templates
-tools/        macOS collection manager and standalone C++ quality analyzer
+tools/        macOS collection manager and standalone C++ quality tools
 ```
 
 More detail is in [Configuration](docs/CONFIGURATION.md),

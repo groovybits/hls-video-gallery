@@ -946,6 +946,11 @@ class QualityWorkerTests(unittest.TestCase):
         report = synthetic_quality_report(
             [100, 80, 60, 40, 20, 0], scene_split=2
         )
+        report["preprocessing"] = {
+            "reference_deinterlace": True,
+            "reference_deinterlace_filter": "yadif=deint=interlaced",
+        }
+        report["warnings"] = ["Source and output durations differ."]
         item = catalog_item("video", cache_key(31), 1, duration=6)
         variant = {
             "name": "1080p",
@@ -996,6 +1001,14 @@ class QualityWorkerTests(unittest.TestCase):
         )
         self.assertTrue(dashboard["hdr_normalized"])
         self.assertEqual(report["summary"], dashboard["summary"])
+        self.assertEqual(
+            report["preprocessing"],
+            dashboard["report_metadata"]["preprocessing"],
+        )
+        self.assertEqual(
+            report["warnings"],
+            dashboard["report_metadata"]["warnings"],
+        )
         self.assertEqual(7, dashboard["rendition"]["media_sequence"])
         self.assertEqual(2, dashboard["rendition"]["segment_count"])
         self.assertEqual(2, len(dashboard["scenes"]))
@@ -1209,6 +1222,248 @@ class QualityWorkerTests(unittest.TestCase):
             self.assertEqual(
                 ("report.json", "frames.csv", "report.html"),
                 self.worker.REPORT_ARTIFACTS,
+            )
+            self.assertEqual(
+                ("report.json", "frames.csv"),
+                self.worker.MEASUREMENT_ARTIFACTS,
+            )
+
+    def test_standalone_html_is_replaceable_without_remeasuring(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            key = cache_key(34)
+            item = catalog_item("video", key, 1)
+            record = quality_record(self.worker, key, "current")
+            record["artifacts"] = create_report_artifacts(
+                root, key, synthetic_quality_report([90, 80, 70])
+            )
+            report_root = root / "data" / "quality" / key
+
+            (report_root / "report.html").write_text(
+                "replacement presentation\n", encoding="utf-8"
+            )
+            self.assertTrue(
+                self.worker.report_artifacts_ready(root, item, record)
+            )
+
+            (report_root / "frames.csv").write_text(
+                "changed measurement\n", encoding="utf-8"
+            )
+            self.assertFalse(
+                self.worker.report_artifacts_ready(root, item, record)
+            )
+
+    def test_standalone_report_backfill_is_fingerprinted_and_cached(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            item = catalog_item("video", cache_key(35), 1, duration=6)
+            create_hls_media_cache(root, item, [3, 3], media_sequence=20)
+            report = synthetic_quality_report(
+                [92, 84, 76, 68, 60, 52], scene_split=3
+            )
+            report["gallery"] = {
+                "video_id": item["id"],
+                "cache_key": item["cache_key"],
+            }
+            record = quality_record(self.worker, item["cache_key"], "current")
+            record["artifacts"] = create_report_artifacts(
+                root, item["cache_key"], report
+            )
+            self.assertTrue(self.worker.ensure_quality_dashboard(root, item))
+
+            renderer = root / "quality-report-renderer"
+            renderer.write_text(
+                "#!/usr/bin/env python3\n"
+                "import argparse\n"
+                "from pathlib import Path\n"
+                "parser = argparse.ArgumentParser()\n"
+                "parser.add_argument('--report-json', required=True)\n"
+                "parser.add_argument('--dashboard-json')\n"
+                "parser.add_argument('--output', required=True)\n"
+                "parser.add_argument('--fingerprint', required=True)\n"
+                "parser.add_argument('--title')\n"
+                "args = parser.parse_args()\n"
+                "Path(args.output).write_text(\n"
+                "    '<!doctype html><head>'\n"
+                "    '<meta name=\"quality-report-renderer\" content=\"2\">'\n"
+                "    '<meta name=\"quality-report-fingerprint\" content=\"' +\n"
+                "    args.fingerprint + '\"></head><body></body>',\n"
+                "    encoding='utf-8',\n"
+                ")\n",
+                encoding="utf-8",
+            )
+            renderer.chmod(0o755)
+            environment = {
+                "VIDEO_QUALITY_REPORT_RENDERER": str(renderer),
+            }
+            html_path = (
+                root / "data" / "quality" / item["cache_key"] / "report.html"
+            )
+            with mock.patch.dict(os.environ, environment, clear=False):
+                self.assertTrue(
+                    self.worker.ensure_standalone_report(root, item)
+                )
+                first_state = html_path.stat()
+                first_fingerprint = (
+                    self.worker.embedded_standalone_report_fingerprint(
+                        html_path
+                    )
+                )
+                self.assertRegex(first_fingerprint or "", r"^[0-9a-f]{64}$")
+                self.assertFalse(
+                    self.worker.ensure_standalone_report(root, item)
+                )
+                self.assertEqual(
+                    first_state.st_mtime_ns, html_path.stat().st_mtime_ns
+                )
+                html_path.chmod(0o600)
+                self.assertFalse(
+                    self.worker.ensure_standalone_report(root, item)
+                )
+                self.assertEqual(0o644, html_path.stat().st_mode & 0o777)
+
+                item["title"] = "A renamed video"
+                self.assertTrue(
+                    self.worker.ensure_standalone_report(root, item)
+                )
+                renamed_fingerprint = (
+                    self.worker.embedded_standalone_report_fingerprint(
+                        html_path
+                    )
+                )
+                self.assertNotEqual(first_fingerprint, renamed_fingerprint)
+
+                dashboard_path = html_path.with_name("dashboard.json")
+                dashboard_path.write_text(
+                    dashboard_path.read_text(encoding="utf-8") + "\n",
+                    encoding="utf-8",
+                )
+                self.assertTrue(
+                    self.worker.ensure_standalone_report(root, item)
+                )
+                self.assertNotEqual(
+                    first_fingerprint,
+                    self.worker.embedded_standalone_report_fingerprint(
+                        html_path
+                    ),
+                )
+
+                result = self.worker.backfill_standalone_reports(
+                    root, [item], {"video": record}
+                )
+            self.assertEqual(0, result["generated"])
+            self.assertEqual(1, result["cached"])
+            self.assertEqual([], result["errors"])
+            self.assertEqual(
+                self.worker.artifact_state(html_path),
+                record["artifacts"]["report.html"],
+            )
+            self.assertTrue(
+                self.worker.report_artifacts_ready(root, item, record)
+            )
+
+    def test_render_reports_only_preserves_measurements_and_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            item = catalog_item("video", cache_key(36), 1, duration=6)
+            create_hls_media_cache(root, item, [3, 3], media_sequence=30)
+            report = synthetic_quality_report(
+                [92, 84, 76, 68, 60, 52], scene_split=3
+            )
+            report["gallery"] = {
+                "video_id": item["id"],
+                "cache_key": item["cache_key"],
+            }
+            record = quality_record(
+                self.worker, item["cache_key"], "older-analyzer-signature"
+            )
+            record["artifacts"] = create_report_artifacts(
+                root, item["cache_key"], report
+            )
+            write_json(root / "data" / "catalog.json", {
+                "scan": {"in_progress": False},
+                "items": [item],
+            })
+            index_path = root / "data" / "quality-index.json"
+            write_json(index_path, {
+                "settings_signature": "older-analyzer-signature",
+                "items": {item["id"]: record},
+            })
+            report_root = (
+                root / "data" / "quality" / item["cache_key"]
+            )
+            immutable_before = {
+                name: (report_root / name).read_bytes()
+                for name in self.worker.MEASUREMENT_ARTIFACTS
+            }
+            index_before = index_path.read_bytes()
+
+            renderer = root / "quality-report-renderer"
+            renderer.write_text(
+                "#!/usr/bin/env python3\n"
+                "import argparse\n"
+                "from pathlib import Path\n"
+                "parser = argparse.ArgumentParser()\n"
+                "parser.add_argument('--report-json', required=True)\n"
+                "parser.add_argument('--dashboard-json')\n"
+                "parser.add_argument('--output', required=True)\n"
+                "parser.add_argument('--fingerprint', required=True)\n"
+                "parser.add_argument('--title')\n"
+                "args = parser.parse_args()\n"
+                "Path(args.output).write_text(\n"
+                "    '<meta name=\"quality-report-renderer\" content=\"2\">'\n"
+                "    '<meta name=\"quality-report-fingerprint\" content=\"' +\n"
+                "    args.fingerprint + '\">', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            renderer.chmod(0o755)
+            arguments = SimpleNamespace(
+                root=str(root),
+                status=False,
+                watch=False,
+                json=False,
+                all=False,
+                command=False,
+                force=False,
+                ignore_busy=False,
+                prune_only=False,
+                render_reports_only=True,
+                items=1,
+                video_id=None,
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"VIDEO_QUALITY_REPORT_RENDERER": str(renderer)},
+                clear=False,
+            ), mock.patch.object(
+                self.worker, "parse_arguments", return_value=arguments
+            ), mock.patch.object(
+                self.worker, "settings"
+            ) as settings, mock.patch.object(
+                self.worker, "run_one"
+            ) as run_one, mock.patch.object(
+                self.worker, "prune_reports"
+            ) as prune_reports, mock.patch.object(
+                self.worker, "throttle_idle_poll"
+            ) as throttle, mock.patch.object(
+                self.worker.sys,
+                "argv",
+                ["/usr/local/bin/hls-gallery-quality-status-example"],
+            ), redirect_stdout(io.StringIO()):
+                result = self.worker.main()
+
+            self.assertEqual(0, result)
+            settings.assert_not_called()
+            run_one.assert_not_called()
+            prune_reports.assert_not_called()
+            throttle.assert_not_called()
+            self.assertEqual(index_before, index_path.read_bytes())
+            for name, content in immutable_before.items():
+                self.assertEqual(content, (report_root / name).read_bytes())
+            self.assertTrue((report_root / "dashboard.json").is_file())
+            self.assertEqual(
+                0o644,
+                (report_root / "report.html").stat().st_mode & 0o777,
             )
 
     def test_existing_report_metrics_are_backfilled_without_reanalysis(self):

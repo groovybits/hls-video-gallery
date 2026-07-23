@@ -60,6 +60,13 @@ The displayed forecast learns from completed analysis-time/source-duration
 ratios; before enough history exists it intentionally uses a conservative
 estimate.
 
+To refresh only the compact dashboard and self-contained standalone HTML for
+completed measurements, without decoding video or running VMAF, use:
+
+```bash
+hls-gallery-quality-status-my-video-gallery --render-reports-only
+```
+
 ## Adding, replacing, and deleting media
 
 - Add: finish copying a file into `media/`. It is processed after `settle_seconds`.

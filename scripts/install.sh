@@ -93,6 +93,8 @@ encoding_sha="$(value encoding_sha256)"
 quality_source_dir="$repo_root/tools/quality-analyzer"
 quality_source_binary="$quality_source_dir/hls-quality-analyzer"
 quality_install_binary="/usr/local/libexec/hls-video-gallery/hls-quality-analyzer"
+quality_renderer_source_binary="$quality_source_dir/hls-quality-report-renderer"
+quality_renderer_install_binary="/usr/local/libexec/hls-video-gallery/hls-quality-report-renderer"
 if [[ "$quality_enabled" == "true" ]]; then
     for command in make c++; do
         command -v "$command" >/dev/null 2>&1 || {
@@ -211,6 +213,8 @@ install -m 0755 -o root -g root \
     /usr/local/libexec/hls-video-gallery/prepare-media-permissions.py
 if [[ "$quality_enabled" == "true" ]]; then
     install -m 0755 -o root -g root "$quality_source_binary" "$quality_install_binary"
+    install -m 0755 -o root -g root \
+        "$quality_renderer_source_binary" "$quality_renderer_install_binary"
 fi
 
 marker_tmp="$(mktemp)"
@@ -263,6 +267,7 @@ ln -sfn "$target/_tools/status_cli.py" "/usr/local/bin/hls-gallery-status-${inst
 ln -sfn "$target/_tools/quality_analyzer.py" "/usr/local/bin/hls-gallery-quality-status-${instance_id}"
 if [[ "$quality_enabled" == "true" ]]; then
     ln -sfn "$quality_install_binary" /usr/local/bin/hls-quality-analyzer
+    ln -sfn "$quality_renderer_install_binary" /usr/local/bin/hls-quality-report-renderer
 fi
 if [[ "$cdn_provider" == "bunny" ]]; then
     ln -sfn "$target/_tools/bunny_sync.py" "/usr/local/bin/hls-gallery-bunny-status-${instance_id}"

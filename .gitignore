@@ -30,4 +30,5 @@ __pycache__/
 
 # Local standalone quality-analyzer builds
 /tools/quality-analyzer/hls-quality-analyzer
+/tools/quality-analyzer/hls-quality-report-renderer
 /tools/quality-analyzer/build/

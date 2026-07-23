@@ -24,8 +24,9 @@ from datetime import datetime, timezone
 
 
 WORKER_VERSION = "gallery-quality-v2"
-DASHBOARD_SCHEMA_VERSION = 1
+DASHBOARD_SCHEMA_VERSION = 2
 DASHBOARD_POINT_LIMIT = 7000
+STANDALONE_REPORT_RENDERER_VERSION = 2
 CACHE_KEY = re.compile(r"^[0-9a-f]{18}--[0-9a-f]{14}$")
 BUILD_DIRECTORY = re.compile(
     r"^\.building-[0-9a-f]{18}--[0-9a-f]{14}-[A-Za-z0-9_-]+$"
@@ -34,6 +35,11 @@ OLD_DIRECTORY = re.compile(
     r"^\.old-[0-9a-f]{18}--[0-9a-f]{14}-[0-9]+$"
 )
 REPORT_ARTIFACTS = ("report.json", "frames.csv", "report.html")
+MEASUREMENT_ARTIFACTS = ("report.json", "frames.csv")
+STANDALONE_REPORT_FINGERPRINT = re.compile(
+    r'<meta\s+name="quality-report-fingerprint"\s+content="([0-9a-f]{64})"\s*/?>',
+    re.IGNORECASE,
+)
 ABANDONED_BUILD_SECONDS = 24 * 60 * 60
 SUMMARY_METRICS = (
     ("vmaf_standard", 2),
@@ -1006,6 +1012,20 @@ def build_quality_dashboard(
         },
         "summary": summary,
         "hdr_normalized": report_is_hdr_normalized(report),
+        "report_metadata": {
+            key: report.get(key)
+            for key in (
+                "analyzer",
+                "analyzer_version",
+                "generated_at",
+                "inputs",
+                "normalization",
+                "preprocessing",
+                "capabilities",
+                "warnings",
+            )
+            if report.get(key) is not None
+        },
         "video": {
             key: video.get(key)
             for key in (
@@ -1098,6 +1118,138 @@ def backfill_quality_dashboards(root, items, records):
     return result
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for portion in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(portion)
+    return digest.hexdigest()
+
+
+def standalone_report_renderer():
+    return Path(os.environ.get(
+        "VIDEO_QUALITY_REPORT_RENDERER",
+        "/usr/local/libexec/hls-video-gallery/hls-quality-report-renderer",
+    )).expanduser()
+
+
+def standalone_report_fingerprint(report_path, dashboard_path, item, renderer):
+    report_state = artifact_state(report_path)
+    if report_state is None:
+        raise RuntimeError("quality report JSON is missing")
+    dashboard_state = artifact_state(dashboard_path)
+    if not renderer.is_file() or not os.access(str(renderer), os.X_OK):
+        raise RuntimeError(
+            "quality report renderer is missing or not executable: {}".format(
+                renderer
+            )
+        )
+    identity = {
+        "renderer_version": STANDALONE_REPORT_RENDERER_VERSION,
+        "renderer_sha256": file_sha256(renderer),
+        "cache_key": str(item.get("cache_key") or ""),
+        "title": display_name(item),
+        "report": report_state,
+        "dashboard": dashboard_state,
+    }
+    canonical = json.dumps(
+        identity, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def embedded_standalone_report_fingerprint(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        with path.open("rb") as handle:
+            prefix = handle.read(16 * 1024).decode("utf-8", "replace")
+    except OSError:
+        return None
+    match = STANDALONE_REPORT_FINGERPRINT.search(prefix)
+    return match.group(1).lower() if match else None
+
+
+def ensure_standalone_report(root, item):
+    report_path, dashboard_path = dashboard_report_paths(root, item)
+    html_path = report_path.with_name("report.html")
+    if html_path.is_symlink():
+        raise RuntimeError("standalone quality report cannot be a symbolic link")
+    renderer = standalone_report_renderer()
+    fingerprint = standalone_report_fingerprint(
+        report_path, dashboard_path, item, renderer
+    )
+    if embedded_standalone_report_fingerprint(html_path) == fingerprint:
+        os.chmod(str(html_path), 0o644)
+        return False
+
+    command = [
+        str(renderer),
+        "--report-json", str(report_path),
+        "--output", str(html_path),
+        "--fingerprint", fingerprint,
+        "--title", display_name(item),
+    ]
+    if artifact_state(dashboard_path) is not None:
+        command.extend(["--dashboard-json", str(dashboard_path)])
+    completed = subprocess.run(
+        command,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=120,
+    )
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(
+            "quality report renderer exited with status {}{}".format(
+                completed.returncode,
+                ": " + detail[-1000:] if detail else "",
+            )
+        )
+    if embedded_standalone_report_fingerprint(html_path) != fingerprint:
+        raise RuntimeError(
+            "quality report renderer did not publish the expected fingerprint"
+        )
+    os.chmod(str(html_path), 0o644)
+    return True
+
+
+def backfill_standalone_reports(root, items, records):
+    by_id = {
+        str(item.get("id")): item
+        for item in items
+        if isinstance(item, dict) and item.get("id")
+    }
+    result = {"generated": 0, "cached": 0, "errors": []}
+    for item_id in sorted(records):
+        item = by_id.get(str(item_id))
+        record = records.get(item_id)
+        if item is None or not isinstance(record, dict):
+            continue
+        try:
+            generated = ensure_standalone_report(root, item)
+            current = artifact_state(
+                root / "data" / "quality" / str(item["cache_key"]) / "report.html"
+            )
+            if current is not None:
+                artifacts = record.get("artifacts")
+                if not isinstance(artifacts, dict):
+                    artifacts = {}
+                    record["artifacts"] = artifacts
+                artifacts["report.html"] = current
+        except Exception as error:
+            result["errors"].append({
+                "video_id": str(item_id),
+                "error": str(error)[-1000:],
+            })
+            continue
+        result["generated" if generated else "cached"] += 1
+    return result
+
+
 def report_artifacts_ready(root, item, record):
     expected = record.get("artifacts") if isinstance(record, dict) else None
     if not isinstance(expected, dict):
@@ -1105,7 +1257,10 @@ def report_artifacts_ready(root, item, record):
     report_root = root / "data" / "quality" / str(item.get("cache_key") or "")
     if report_root.is_symlink() or not report_root.is_dir():
         return False
-    for filename in REPORT_ARTIFACTS:
+    # report.json and frames.csv are immutable measurement outputs. report.html
+    # is a replaceable presentation cache derived from them, so a renderer
+    # upgrade or interrupted HTML backfill must never queue another VMAF pass.
+    for filename in MEASUREMENT_ARTIFACTS:
         current = artifact_state(report_root / filename)
         saved = expected.get(filename)
         if current is None or not isinstance(saved, dict):
@@ -1231,6 +1386,49 @@ def queue_state(root, configuration, force=False):
         pending.append(item)
     pending.extend(retry_pending)
     return catalog, items, records, failures, pending, waiting_content, cooling_down
+
+
+def presentation_state(root, catalog=None):
+    """Load completed measurements without applying current analyzer settings."""
+    if catalog is None:
+        catalog = load_json(root / "data" / "catalog.json", None)
+    if not isinstance(catalog, dict) or not isinstance(catalog.get("items"), list):
+        raise RuntimeError("a valid catalog is required before rendering reports")
+    items = [
+        item for item in catalog["items"]
+        if (
+            isinstance(item, dict)
+            and item.get("id")
+            and CACHE_KEY.fullmatch(str(item.get("cache_key") or ""))
+        )
+    ]
+    items.sort(key=lambda item: (
+        integer(item.get("upload_sequence"), 2**63 - 1),
+        str(item.get("source_relative") or item.get("title") or "").casefold(),
+    ))
+    by_id = {str(item["id"]): item for item in items}
+    index = load_json(root / "data" / "quality-index.json", {})
+    saved_records = (
+        index.get("items")
+        if isinstance(index, dict) and isinstance(index.get("items"), dict)
+        else {}
+    )
+    records = {
+        str(item_id): record
+        for item_id, record in saved_records.items()
+        if (
+            str(item_id) in by_id
+            and isinstance(record, dict)
+            and record.get("cache_key") == by_id[str(item_id)].get("cache_key")
+            and encoded_output_current(by_id[str(item_id)], record)
+            and report_artifacts_ready(root, by_id[str(item_id)], record)
+        )
+    }
+    records = {
+        item_id: hydrate_record_summary(root, by_id[item_id], record)
+        for item_id, record in records.items()
+    }
+    return items, records
 
 
 def average_analysis_ratio(records):
@@ -1611,6 +1809,13 @@ def run_one(root, item, configuration, progress_path, items, records, pending, w
             # playlist or derived view must never turn a successful objective
             # measurement into a failed/retried quality-analysis job.
             pass
+        try:
+            ensure_standalone_report(root, item)
+        except Exception:
+            # The standalone HTML is another replaceable presentation cache.
+            # Keep the completed measurement even if its optional renderer is
+            # unavailable; the next worker pass can retry the HTML only.
+            pass
         return report, measurement_elapsed
     finally:
         if process is not None and process.poll() is None:
@@ -1749,6 +1954,11 @@ def parse_arguments():
     parser.add_argument("--force", action="store_true", help="remeasure matching cached reports")
     parser.add_argument("--ignore-busy", action="store_true", help="ignore load/process checks (manual use only)")
     parser.add_argument("--prune-only", action="store_true", help="remove stale report records and output")
+    parser.add_argument(
+        "--render-reports-only",
+        action="store_true",
+        help="refresh dashboard and standalone HTML presentation caches without measuring video",
+    )
     parser.add_argument("--status", action="store_true", help="show the last published quality status")
     parser.add_argument("--watch", action="store_true", help="keep showing quality status")
     parser.add_argument("--json", action="store_true", help="emit status JSON")
@@ -1759,7 +1969,11 @@ def parse_arguments():
 
 def main():
     arguments = parse_arguments()
-    if "quality-status" in Path(sys.argv[0]).name:
+    render_reports_only = getattr(arguments, "render_reports_only", False)
+    if (
+        "quality-status" in Path(sys.argv[0]).name
+        and not render_reports_only
+    ):
         arguments.status = True
     root = Path(arguments.root).expanduser().resolve()
     data_root = root / "data"
@@ -1776,12 +1990,12 @@ def main():
     # at the systemd timer's one-second cadence. Terminal/resource-wait states
     # back off to a 30-second poll without holding any gallery lock, avoiding
     # permanent one-process-per-second churn once the queue is empty.
-    throttle_idle_poll(progress_path)
+    if not render_reports_only:
+        throttle_idle_poll(progress_path)
     quality_lock = acquire_lock(data_root / "quality-analysis.lock")
     if quality_lock is None:
         print("Another quality-analysis pass is already running; exiting cleanly")
-        return 0
-    configuration = settings()
+        return 75 if render_reports_only else 0
     index_path = data_root / "quality-index.json"
     failures_path = data_root / "quality-failures.json"
     scan_lock = None
@@ -1796,7 +2010,7 @@ def main():
                 progress_path, catalog_wait_payload(progress_path)
             )
             print("DEFER: the catalog scanner is active")
-            return 0
+            return 75 if render_reports_only else 0
 
         catalog_snapshot = load_json(data_root / "catalog.json", {})
         scan_snapshot = catalog_snapshot.get("scan") if isinstance(catalog_snapshot, dict) else {}
@@ -1805,14 +2019,49 @@ def main():
             wait_payload["reason"] = "the published catalog is an in-progress snapshot"
             atomic_write_json(progress_path, wait_payload)
             print("DEFER: the catalog scan is still in progress")
-            return 0
+            return 75 if render_reports_only else 0
+        if render_reports_only:
+            items, records = presentation_state(root, catalog_snapshot)
+            dashboard_backfill = backfill_quality_dashboards(
+                root, items, records
+            )
+            standalone_backfill = backfill_standalone_reports(
+                root, items, records
+            )
+            presentation_errors = (
+                dashboard_backfill["errors"]
+                + standalone_backfill["errors"]
+            )
+            print(
+                "Quality presentations: {} dashboards, {} standalone reports, "
+                "{} errors".format(
+                    dashboard_backfill["generated"],
+                    standalone_backfill["generated"],
+                    len(presentation_errors),
+                )
+            )
+            for error in presentation_errors:
+                print(
+                    "ERROR {}: {}".format(
+                        error.get("video_id") or "unknown video",
+                        error.get("error") or "presentation generation failed",
+                    ),
+                    file=sys.stderr,
+                )
+            return 1 if presentation_errors else 0
+        configuration = settings()
         catalog, items, records, failures, pending, waiting_content, cooling_down = queue_state(
             root, configuration, force=arguments.force and not arguments.video_id,
         )
         # Presentation data is derived only from immutable completed reports and
         # media playlists. Backfill it during ordinary and idle worker runs, but
         # never let one damaged report affect measurement queue validity.
-        backfill_quality_dashboards(root, items, records)
+        dashboard_backfill = backfill_quality_dashboards(
+            root, items, records
+        )
+        standalone_backfill = backfill_standalone_reports(
+            root, items, records
+        )
         execution_pending = pending
         if arguments.video_id:
             requested = str(arguments.video_id)

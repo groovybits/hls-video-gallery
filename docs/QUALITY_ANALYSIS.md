@@ -189,9 +189,12 @@ settings, or installing a different analyzer binary queues a new report.
 Scheduling, load, retry-cooldown, CPU-thread, and prerequisite policy changes do
 not invalidate metric results. A failure cooldown is tied to the measurement
 signature, so a fixed or upgraded analyzer can retry immediately. Each cached
-record also stores the generated artifacts' size and nanosecond modification
-time; a missing or changed report is queued again. Deleting a source removes its
-record from the quality index, and its generated report directory is pruned.
+record also stores the immutable `report.json` and `frames.csv` measurement
+artifacts' size and nanosecond modification time; a missing or changed
+measurement artifact is queued again. The standalone `report.html` is a
+replaceable presentation cache and is regenerated without measuring video.
+Deleting a source removes its record from the quality index, and its generated
+report directory is pruned.
 
 Pruning is deliberately narrow. It removes only report directories without a
 current validated record and abandoned generated build directories older than 24
@@ -225,10 +228,18 @@ The command prints a compact terminal summary and writes:
 |---|---|
 | `report.json` | Complete machine-readable summary, normalization details, metrics, every-frame values, and scenes |
 | `frames.csv` | One row per aligned frame for spreadsheets and further analysis |
-| `report.html` | Standalone visual timeline, scene table, metric summary, and assessment |
+| `report.html` | Self-contained interactive multi-metric explorer, scene and HLS-segment drill-down, summary, and assessment |
 
-The HTML report has no server-side dependency. Treat copied reports as private:
-they can identify source files and disclose detailed information about a video.
+The HTML report has no server-side or network dependency. It compares all seven
+0–100 series, exposes raw SSIM and PSNR values, supports hover and keyboard
+inspection, zooming, weakest-scene focus, and complete scene/segment tables. A
+direct standalone comparison uses clearly labeled nominal six-second segments
+when no exact playlist projection is available. Gallery-generated reports embed
+the exact HLS segment boundaries, sizes, bitrates, and per-segment metric
+summaries.
+
+Treat copied reports as private: they can identify source files and disclose
+detailed information about a video.
 
 ## Gallery status and reports
 
@@ -251,10 +262,17 @@ The browser first requests `dashboard.json`, a compact presentation cache beside
 the normal report. The worker derives it from the existing per-frame
 `report.json` and the selected media playlist. This is an inexpensive file-only
 operation: it does not decode either video, rerun VMAF, change the encoded HLS,
-or modify the three measurement artifacts used to validate the quality cache.
+or modify the two measurement artifacts used to validate the quality cache.
 Existing reports are backfilled during normal worker runs, including idle runs.
 Until that projection exists, the browser falls back to the complete report and
 uses the configured nominal HLS duration for segment boundaries.
+
+`report.html` is also a fingerprinted presentation cache. It can be refreshed
+from completed JSON/CSV measurements without running FFmpeg or VMAF:
+
+```bash
+hls-gallery-quality-status-my-video-gallery --render-reports-only
+```
 
 Use the instance-specific terminal command printed by the installer:
 

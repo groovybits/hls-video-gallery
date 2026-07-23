@@ -28,12 +28,12 @@ case "$distribution" in
         dnf config-manager --set-enabled crb
         dnf install -y epel-release
         dnf install -y "https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-$(rpm -E %rhel).noarch.rpm"
-        dnf install -y ffmpeg ffmpeg-libs httpd-tools python3 php-cli openssl
+        dnf install -y ffmpeg ffmpeg-libs httpd-tools python3 php-cli openssl gcc-c++ make
         ;;
     debian|ubuntu)
         export DEBIAN_FRONTEND=noninteractive
         apt-get update
-        apt-get install -y ffmpeg python3 php-cli apache2-utils openssl ca-certificates
+        apt-get install -y ffmpeg python3 php-cli apache2-utils openssl ca-certificates build-essential
         ;;
     *)
         echo "Automatic dependency setup does not support '$distribution'." >&2

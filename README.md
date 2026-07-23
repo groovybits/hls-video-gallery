@@ -25,6 +25,8 @@ neutral and work for any private video archive.
   details, and a visual timeline.
 - Live web and terminal telemetry for queue position, FPS, speed, ETA, current
   thumbnail, sanitized FFmpeg parameters, and the active command.
+- Optional post-encode objective quality reports with standard and Phone VMAF,
+  SSIM, PSNR, 64-bit perceptual hashes, per-scene scores, and a visual timeline.
 - A macOS manager for direct Photos/iCloud-original exports, safe uploads,
   server inventory, processing status, details, and guarded source deletion.
 - Apache Basic Auth with bcrypt password hashes outside the document root.
@@ -52,6 +54,8 @@ yourself:
 - PHP 7.4 or newer.
 - Python 3.8 or newer.
 - FFmpeg/ffprobe with `libx264`, AAC, scale, MJPEG, and HLS support.
+- FFmpeg with `libvmaf`, plus a C++17 compiler and Make, when objective quality
+  analysis is enabled.
 - OpenSSL and `htpasswd`.
 
 ## Quick start
@@ -191,6 +195,26 @@ The model is intentionally low-priority and waits while FFmpeg is active or the
 configured load ceiling is exceeded. Detections and filename hints are displayed
 separately because neither should be treated as human-reviewed fact.
 
+## Optional objective quality analysis
+
+Quality analysis is off by default. When enabled, a low-priority worker compares
+each finished HLS encode with its source at aligned 30 fps, caches the result for
+that exact source/settings version, and publishes overall, per-metric, and
+per-scene results. It waits for encoding and optional visual analysis instead of
+competing with them, and is capped at two CPU cores.
+
+The normal dependency and application installers build the standalone C++
+analyzer when the feature is enabled:
+
+```bash
+sudo ./scripts/install-dependencies.sh
+sudo ./scripts/install.sh
+hls-gallery-quality-status-my-video-gallery --watch
+```
+
+See [Objective quality analysis](docs/QUALITY_ANALYSIS.md) for the scoring
+formula, HDR normalization, standalone CLI, generated reports, and operations.
+
 ## Optional Bunny CDN and share links
 
 Set `cdn.provider` to `bunny`, copy `config/bunny.example.env` to
@@ -212,10 +236,12 @@ presets/      general-purpose starting configuration
 scripts/      validation, dependency, install, user, analyzer, and release tools
 site/         source templates and runtime application
 systemd/      rendered per-instance service and timer templates
+tools/        macOS collection manager and standalone C++ quality analyzer
 ```
 
 More detail is in [Configuration](docs/CONFIGURATION.md),
-[Operations](docs/OPERATIONS.md), and [Security](SECURITY.md).
+[Operations](docs/OPERATIONS.md), [Objective quality analysis](docs/QUALITY_ANALYSIS.md),
+and [Security](SECURITY.md).
 
 ## Publishing to GitHub
 

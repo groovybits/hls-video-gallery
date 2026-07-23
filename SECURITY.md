@@ -19,6 +19,13 @@ privately and include the affected version and a minimal reproduction.
 - Keep `/usr/local/libexec/hls-video-gallery/prepare-media-permissions.py`
   root-owned. The permission service deliberately skips symlinks and unsupported
   file types while making source videos readable by the unprivileged scanner.
+- Keep objective quality reports behind the gallery's authentication. Generated
+  JSON, CSV, and HTML can disclose source-relative filenames, durations, scene
+  boundaries, and detailed per-frame measurements even though they do not expose
+  the original source file.
+- Do not point the standalone quality analyzer at untrusted playlists or paths
+  under a more privileged account. The gallery service runs it as the configured
+  unprivileged site owner and validates catalog-derived source/cache paths.
 - Keep the OS, Apache, PHP, FFmpeg, and Python packages updated.
 
 This project does not provide DRM. Authentication and signed URLs control access;

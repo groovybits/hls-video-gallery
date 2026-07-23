@@ -15,6 +15,8 @@ Examples below use the instance ID `my-video-gallery` and document root
 | `hls-gallery-my-video-gallery-monitor.service` | Publishes live FFmpeg and queue telemetry. |
 | `hls-gallery-my-video-gallery-analyzer.timer` | Optional low-priority visual-tag batches. |
 | `hls-gallery-my-video-gallery-analyzer.service` | Optional cached-thumbnail model run. |
+| `hls-gallery-my-video-gallery-quality.timer` | Optional post-encode objective-quality batches. |
+| `hls-gallery-my-video-gallery-quality.service` | Serial VMAF/SSIM/PSNR/pHash measurement worker. |
 | `hls-gallery-my-video-gallery-bunny.service` | Optional continuous Bunny upload/prune worker. |
 
 Useful commands:
@@ -24,6 +26,7 @@ systemctl status hls-gallery-my-video-gallery-scan.timer
 systemctl list-timers 'hls-gallery-*'
 journalctl -fu hls-gallery-my-video-gallery-scan.service
 journalctl -fu hls-gallery-my-video-gallery-analyzer.service
+journalctl -fu hls-gallery-my-video-gallery-quality.service
 journalctl -fu hls-gallery-my-video-gallery-bunny.service
 ```
 
@@ -41,6 +44,21 @@ hls-gallery-status-my-video-gallery --json
 Queue position and total describe the current scan run, not the all-time catalog.
 Pending sources are processed oldest upload first, and the same telemetry feeds
 the authenticated web status panel.
+
+Optional quality analysis has a separate status command:
+
+```bash
+hls-gallery-quality-status-my-video-gallery --watch
+hls-gallery-quality-status-my-video-gallery --watch --all --command
+hls-gallery-quality-status-my-video-gallery --json
+```
+
+Its queue contains only current catalog versions that do not yet have a current
+quality report. It processes one video at a time, defers to encoding and visual
+analysis, and uses shared locks so those jobs cannot start during a measurement.
+The displayed forecast learns from completed analysis-time/source-duration
+ratios; before enough history exists it intentionally uses a conservative
+estimate.
 
 ## Adding, replacing, and deleting media
 
@@ -86,6 +104,9 @@ Back up:
 
 The `cache/` directory can be recreated from sources, so it is optional. Catalog
 and visual-analysis JSON can also be rebuilt, though saving them avoids work.
+Objective quality output under `data/quality/` and `data/quality-index.json` can
+also be regenerated, but backing it up can avoid many hours of full-frame
+measurement.
 
 Never publish a backup containing Bunny credentials or the Basic Auth file.
 
@@ -140,3 +161,23 @@ disabling SELinux globally.
 Set `install.owner` to the domain account and `document_root` to an isolated
 subdirectory such as `.../public_html/video`. Confirm the panel’s Apache template
 permits `.htaccess` overrides for that path.
+
+### Quality analysis is waiting or missing
+
+- Confirm both `quality_analysis.enabled` and
+  `gallery.show_quality_analysis` have the intended values; the first runs work,
+  while the second displays it.
+- Run `ffmpeg -hide_banner -filters` and confirm `libvmaf`, `scdet`,
+  `colorspace`, `zscale`, and `tonemap` are present.
+- Check the quality status reason. Active encoding, visual analysis, the
+  one-minute load ceiling, or another quality worker can legitimately defer it.
+- If visual analysis is enabled, the exact current cache version must finish that
+  stage before entering the quality queue.
+- Check `systemctl status hls-gallery-my-video-gallery-quality.timer` and the
+  quality service journal.
+
+Quality reports are source-aware and settings-aware. An unchanged video is not
+remeasured merely because time passed. Replacing or touching a source, or
+changing a quality setting, makes the prior report stale without rebuilding HLS
+solely for the quality stage. See
+[Objective quality analysis](QUALITY_ANALYSIS.md) for scoring and standalone use.

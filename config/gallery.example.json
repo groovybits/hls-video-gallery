@@ -53,6 +53,7 @@
     "unmuted": true,
     "show_encoder_status": true,
     "show_content_analysis": false,
+    "show_quality_analysis": false,
     "title_words": {
       "4k": "4K",
       "8k": "8K",
@@ -82,6 +83,17 @@
     "interval_seconds": 210,
     "max_load": 1.5,
     "threads": 1
+  },
+  "quality_analysis": {
+    "enabled": false,
+    "items_per_run": 1,
+    "interval_seconds": 300,
+    "max_load": 1.5,
+    "threads": 2,
+    "frame_rate": 30,
+    "scene_threshold": 10,
+    "min_scene_seconds": 2,
+    "failure_retry_seconds": 3600
   },
   "cdn": {
     "provider": "none",

@@ -340,6 +340,18 @@ def main():
             print("Another content-analysis pass is already running; exiting cleanly")
             return 0
 
+        # Quality measurement and visual tagging are both deliberately
+        # low-priority post-processing jobs. Sharing this lock prevents them
+        # from competing with each other and keeps timing/quality telemetry
+        # representative of one job at a time.
+        post_lock_handle = (data_root / "post-process.lock").open("a+")
+        try:
+            fcntl.flock(post_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            post_lock_handle.close()
+            print("Quality analysis is using the post-processing slot; exiting cleanly")
+            return 0
+
         catalog = load_json(data_root / "catalog.json", {"items": []})
         catalog_items = [item for item in catalog.get("items", []) if isinstance(item, dict) and item.get("id")]
         current_signatures = {item["id"]: item_signature(item) for item in catalog_items}

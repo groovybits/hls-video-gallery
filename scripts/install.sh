@@ -84,10 +84,32 @@ share_links="$(value public_share_links)"
 cdn_provider="$(value cdn_provider)"
 cdn_config="$(value cdn_config)"
 analysis_enabled="$(value content_analysis_enabled)"
+quality_enabled="$(value quality_analysis_enabled)"
 app_version="$(value app_version)"
 pipeline_version="$(value pipeline_version)"
 config_sha="$(value config_sha256)"
 encoding_sha="$(value encoding_sha256)"
+
+quality_source_dir="$repo_root/tools/quality-analyzer"
+quality_source_binary="$quality_source_dir/hls-quality-analyzer"
+quality_install_binary="/usr/local/libexec/hls-video-gallery/hls-quality-analyzer"
+if [[ "$quality_enabled" == "true" ]]; then
+    for command in make c++; do
+        command -v "$command" >/dev/null 2>&1 || {
+            echo "Quality analysis is enabled but the C++ build command is missing: $command" >&2
+            echo "Run scripts/install-dependencies.sh, then retry." >&2
+            exit 1
+        }
+    done
+    quality_filters="$(ffmpeg -hide_banner -filters 2>/dev/null)"
+    for filter in libvmaf scdet colorspace zscale tonemap; do
+        grep -Eq "[[:space:]]${filter}[[:space:]]" <<<"$quality_filters" || {
+            echo "Quality analysis requires an FFmpeg build with the $filter filter." >&2
+            exit 1
+        }
+    done
+    make -C "$quality_source_dir"
+fi
 
 if ! id "$site_owner" >/dev/null 2>&1; then
     echo "Configured install.owner does not exist: $site_owner" >&2
@@ -187,6 +209,9 @@ install -d -m 0755 -o root -g root /usr/local/libexec/hls-video-gallery
 install -m 0755 -o root -g root \
     "$script_dir/prepare-media-permissions.py" \
     /usr/local/libexec/hls-video-gallery/prepare-media-permissions.py
+if [[ "$quality_enabled" == "true" ]]; then
+    install -m 0755 -o root -g root "$quality_source_binary" "$quality_install_binary"
+fi
 
 marker_tmp="$(mktemp)"
 printf 'HLS Video Gallery\nVersion: %s\nPipeline-Version: %s\nInstance-ID: %s\nConfig-SHA256: %s\nEncoding-SHA256: %s\nInstalled: %s\nTarget: %s\n' \
@@ -210,6 +235,8 @@ scan_timer="hls-gallery-${instance_id}-scan.timer"
 monitor_service="hls-gallery-${instance_id}-monitor.service"
 analyzer_service="hls-gallery-${instance_id}-analyzer.service"
 analyzer_timer="hls-gallery-${instance_id}-analyzer.timer"
+quality_service="hls-gallery-${instance_id}-quality.service"
+quality_timer="hls-gallery-${instance_id}-quality.timer"
 bunny_service="hls-gallery-${instance_id}-bunny.service"
 media_permission_service="hls-gallery-${instance_id}-media-permissions.service"
 media_permission_path="hls-gallery-${instance_id}-media-permissions.path"
@@ -220,6 +247,8 @@ install_unit hls-gallery-scan.timer "$scan_timer"
 install_unit hls-gallery-monitor.service "$monitor_service"
 install_unit hls-gallery-analyzer.service "$analyzer_service"
 install_unit hls-gallery-analyzer.timer "$analyzer_timer"
+install_unit hls-gallery-quality.service "$quality_service"
+install_unit hls-gallery-quality.timer "$quality_timer"
 install_unit hls-gallery-media-permissions.service "$media_permission_service"
 install_unit hls-gallery-media-permissions.path "$media_permission_path"
 install_unit hls-gallery-media-permissions.timer "$media_permission_timer"
@@ -231,6 +260,10 @@ elif systemctl list-unit-files "$bunny_service" --no-legend 2>/dev/null | grep -
 fi
 
 ln -sfn "$target/_tools/status_cli.py" "/usr/local/bin/hls-gallery-status-${instance_id}"
+ln -sfn "$target/_tools/quality_analyzer.py" "/usr/local/bin/hls-gallery-quality-status-${instance_id}"
+if [[ "$quality_enabled" == "true" ]]; then
+    ln -sfn "$quality_install_binary" /usr/local/bin/hls-quality-analyzer
+fi
 if [[ "$cdn_provider" == "bunny" ]]; then
     ln -sfn "$target/_tools/bunny_sync.py" "/usr/local/bin/hls-gallery-bunny-status-${instance_id}"
 else
@@ -263,6 +296,13 @@ if $start_services; then
     else
         systemctl disable --now "$analyzer_timer" >/dev/null 2>&1 || true
     fi
+    if [[ "$quality_enabled" == "true" ]]; then
+        systemctl enable --now "$quality_timer"
+        systemctl start --no-block "$quality_service" || true
+    else
+        systemctl disable --now "$quality_timer" >/dev/null 2>&1 || true
+        systemctl stop "$quality_service" >/dev/null 2>&1 || true
+    fi
 fi
 
 echo
@@ -270,4 +310,7 @@ echo "HLS Video Gallery installed."
 echo "Gallery: $(python3 "$script_dir/json-value.py" "$build_root/site/data/site-config.json" site.public_base_url)/"
 echo "Media directory: $target/media"
 echo "Status: hls-gallery-status-${instance_id} --watch"
+if [[ "$quality_enabled" == "true" ]]; then
+    echo "Quality status: hls-gallery-quality-status-${instance_id} --watch"
+fi
 echo "Encoder log: journalctl -fu $scan_service"

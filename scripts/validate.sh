@@ -6,12 +6,15 @@ repo_root="$(dirname -- "$script_dir")"
 render_dir="$repo_root/build/validate"
 python_cache="${TMPDIR:-/tmp}/hls-video-gallery-pycache"
 
-for command in python3 node; do
+for command in python3 node make c++; do
     command -v "$command" >/dev/null 2>&1 || {
         echo "Validation requires $command" >&2
         exit 1
     }
 done
+
+make -C "$repo_root/tools/quality-analyzer"
+make -C "$repo_root/tools/quality-analyzer" test
 
 while IFS= read -r file; do
     bash -n "$file"

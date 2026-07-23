@@ -14,7 +14,7 @@ import sys
 from urllib.parse import urlparse
 
 
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 PIPELINE_VERSION = 6
 CONTENT_ANALYZER_BASE_VERSION = "mobileclip2-s0-configurable-v1"
 PRESETS = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}
@@ -311,14 +311,14 @@ def validate(repo_root, config_path, config):
     quality_analysis = {
         "enabled": bool_value(config, "quality_analysis.enabled", False),
         "items_per_run": int_value(config, "quality_analysis.items_per_run", 1, 1, 20),
-        "interval_seconds": int_value(config, "quality_analysis.interval_seconds", 300, 30, 86400),
-        "max_load": float_value(config, "quality_analysis.max_load", 1.5, 0.1, 100.0),
+        "interval_seconds": int_value(config, "quality_analysis.interval_seconds", 1, 1, 86400),
+        "max_load": float_value(config, "quality_analysis.max_load", 0.0, 0.0, 100.0),
         "threads": int_value(config, "quality_analysis.threads", 2, 1, 2),
         "frame_rate": int_value(config, "quality_analysis.frame_rate", 30, 1, 120),
         "scene_threshold": float_value(config, "quality_analysis.scene_threshold", 10.0, 0.1, 100.0),
         "min_scene_seconds": float_value(config, "quality_analysis.min_scene_seconds", 2.0, 0.1, 120.0),
         "failure_retry_seconds": int_value(
-            config, "quality_analysis.failure_retry_seconds", 3600, 60, 604800,
+            config, "quality_analysis.failure_retry_seconds", 30, 1, 604800,
         ),
     }
 

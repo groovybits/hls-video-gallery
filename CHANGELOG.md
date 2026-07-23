@@ -2,6 +2,28 @@
 
 All notable changes are documented here.
 
+## 1.3.2 — 2026-07-23
+
+- Removed the multi-minute gaps between objective-quality jobs: the queue now
+  checks again after one second without timer jitter, while failed measurements
+  become eligible for retry after 30 seconds. Never-attempted videos run before
+  expired retries so one broken source cannot starve the queue. Completed and
+  resource-waiting queues adaptively poll every 30 seconds to avoid idle churn.
+- Allowed `quality_analysis.max_load` to be `0`, disabling the self-defeating
+  one-minute load gate while retaining process checks, locks, low priority, and
+  the two-core CPU quota.
+- Fixed periodic wrong-frame comparisons when 60 fps sources are measured
+  against 30 fps HLS output by preserving the source time base through frame
+  selection.
+- Added reference-only YADIF preprocessing for genuinely interlaced sources,
+  matching the HLS encoder instead of comparing progressive output to combed
+  source frames.
+- Matched the reference probe, filter graph, and interlace decision to the
+  exact global source video stream selected by the encoder. This avoids false
+  low scores for files containing cover art, proxy, or alternate video tracks.
+- Selected the highest explicit HLS rendition for measurement and invalidated a
+  cached report when its encoded output is rebuilt in place.
+
 ## 1.3.1 — 2026-07-23
 
 - Kept the quality-analysis overview visible while its timer is idle, waiting

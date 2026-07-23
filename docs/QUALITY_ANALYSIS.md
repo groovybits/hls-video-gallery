@@ -35,13 +35,13 @@ Set both the worker and its authenticated interface in `config/gallery.json`:
   "quality_analysis": {
     "enabled": true,
     "items_per_run": 1,
-    "interval_seconds": 300,
-    "max_load": 1.5,
+    "interval_seconds": 1,
+    "max_load": 0,
     "threads": 2,
     "frame_rate": 30,
     "scene_threshold": 10,
     "min_scene_seconds": 2,
-    "failure_retry_seconds": 3600
+    "failure_retry_seconds": 30
   }
 }
 ```
@@ -68,8 +68,9 @@ ffmpeg -hide_banner -filters | grep -E 'libvmaf|scdet|colorspace|zscale|tonemap'
 The defaults deliberately favor repeatable full-reference comparisons over fast
 sampling:
 
-1. The original video is the reference. The completed HLS rendition is the
-   distorted input.
+1. The exact global video stream selected by the encoder from the original file
+   is the reference. Attached pictures and unselected proxy or alternate tracks
+   are not compared. The completed HLS rendition is the distorted input.
 2. Timestamps are reset and both inputs are aligned at 30 frames per second.
 3. The reference is scaled to the encoded display dimensions before comparison.
 4. Both sides enter the same display-referred BT.709 comparison domain. SDR pairs
@@ -85,6 +86,12 @@ The normal path uses one paired FFmpeg decode pass and fans the normalized frame
 out to libvmaf, source-scene detection, and the C++ pHash reader. If an installed
 libvmaf rejects the optional Phone model, the analyzer retries without that
 informational model; official scoring is unchanged.
+
+New catalog entries record `primary_video_stream_index`. Legacy cached entries
+derive the same default-first, then highest-resolution selection from their
+stored stream metadata, so adding this field does not require rebuilding HLS.
+The gallery passes that global index explicitly to the standalone analyzer, and
+the report records it under both `inputs` and `settings`.
 
 Changing frame rate or scene settings creates a new settings signature, so the
 gallery does not silently mix unlike reports.
@@ -147,7 +154,8 @@ Quality analysis is intentionally serialized:
 - the systemd service has a 200% CPU quota, equivalent to two fully occupied CPU
   cores;
 - the worker defers while encoding or visual content analysis is active;
-- it also defers when one-minute load exceeds `max_load`;
+- it also defers when one-minute load exceeds a nonzero `max_load`; set the
+  value to `0` to rely on the explicit media-process checks and service limits;
 - shared post-processing and scanner locks prevent either job from starting
   halfway through a measurement.
 
@@ -157,8 +165,13 @@ version. If visual content analysis is disabled, quality work begins after the
 encode is ready.
 
 The queue follows persistent upload order. `items_per_run` limits how many
-videos one timer activation measures; keeping it at `1` gives encoding and other
-work a chance to run between long measurements.
+videos one timer activation measures. Keeping it at `1` gives the scanner,
+encoding, and other work a scheduling opportunity between long measurements.
+The next queue check normally occurs one second after a run. Systemd still
+serializes the service, and the worker lock also protects manual invocations.
+When the queue is complete, failed work is cooling down, or another media job
+owns the resources, the worker adaptively polls every 30 seconds without
+holding gallery locks. Active backlogs retain the one-second handoff.
 
 ## Cache behavior and deletion
 
@@ -258,7 +271,8 @@ dependency installer, then check `ffmpeg -filters`. A different FFmpeg earlier i
 
 This is normally resource coordination, not a failure. Check the status reason,
 then inspect encoder and content-analysis services. Quality work will resume
-after those jobs release their locks and load falls below `max_load`.
+after those jobs release their locks. If `max_load` is nonzero, the one-minute
+load must also fall below that ceiling.
 
 ### A video remains in the category wait
 
@@ -271,8 +285,11 @@ record.
 
 ### A measurement failed
 
-The worker records a short error and waits `failure_retry_seconds` before trying
-that cache version again. Inspect:
+The worker records a short error and makes that cache version eligible again
+after `failure_retry_seconds` (30 seconds by default). Other eligible videos
+remain available to subsequent queue runs, and never-attempted videos take
+priority over expired retries so a repeatedly failing file cannot block them.
+Inspect:
 
 ```bash
 journalctl -u hls-gallery-my-video-gallery-quality.service

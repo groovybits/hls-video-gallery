@@ -16,6 +16,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKER_PATH = REPO_ROOT / "site" / "_tools" / "quality_analyzer.py"
 MONITOR_PATH = REPO_ROOT / "site" / "_tools" / "encode_monitor.py"
+SCANNER_PATH = REPO_ROOT / "site" / "_tools" / "scan.py"
 CONFIGURE_PATH = REPO_ROOT / "scripts" / "configure.py"
 EXAMPLE_CONFIG = REPO_ROOT / "config" / "gallery.example.json"
 
@@ -81,6 +82,7 @@ class QualityWorkerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.worker = load_module("hls_gallery_quality_worker", WORKER_PATH)
         cls.monitor = load_module("hls_gallery_encode_monitor", MONITOR_PATH)
+        cls.scanner = load_module("hls_gallery_scanner", SCANNER_PATH)
 
     def test_quality_ffmpeg_is_not_misreported_as_an_encoder(self):
         root = Path("/srv/example-gallery")
@@ -378,6 +380,378 @@ class QualityWorkerTests(unittest.TestCase):
                 "3.00 exceeds 1.50",
                 self.worker.active_resource_reason(root),
             )
+        with mock.patch.object(
+            self.worker, "process_cmdlines", return_value=[]
+        ), mock.patch.object(
+            self.worker.os, "getloadavg", return_value=(99.0, 98.0, 97.0)
+        ), mock.patch.dict(
+            os.environ, {"VIDEO_QUALITY_MAX_LOAD": "0"}, clear=False
+        ):
+            self.assertEqual("", self.worker.active_resource_reason(root))
+
+    def test_highest_hls_variant_is_selected_and_cannot_escape_hls_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            key = cache_key(23)
+            source = root / "media" / "source.mp4"
+            source.parent.mkdir()
+            source.write_bytes(b"source")
+            hls_root = root / "cache" / key / "hls"
+            low = hls_root / "360p" / "index.m3u8"
+            high = hls_root / "1080p" / "index.m3u8"
+            low.parent.mkdir(parents=True)
+            high.parent.mkdir(parents=True)
+            low.write_text("#EXTM3U\n", encoding="utf-8")
+            high.write_text("#EXTM3U\n", encoding="utf-8")
+            item = {
+                "source_relative": source.name,
+                "cache_key": key,
+                "hls_variants": [
+                    {
+                        "width": 640,
+                        "height": 360,
+                        "video_bitrate": 800_000,
+                        "playlist": "360p/index.m3u8",
+                    },
+                    {
+                        "width": 1920,
+                        "height": 1080,
+                        "video_bitrate": 6_500_000,
+                        "playlist": "1080p/index.m3u8",
+                    },
+                ],
+            }
+
+            selected_source, selected_playlist = self.worker.safe_item_paths(
+                root, item
+            )
+
+            self.assertEqual(source.resolve(), selected_source)
+            self.assertEqual(high.resolve(), selected_playlist)
+
+            unsafe = copy.deepcopy(item)
+            unsafe["hls_variants"][1]["playlist"] = "../../outside.m3u8"
+            with self.assertRaisesRegex(RuntimeError, "escapes"):
+                self.worker.safe_item_paths(root, unsafe)
+
+            escaped_root = root / "escaped-cache"
+            escaped_root.mkdir()
+            escaped_item = copy.deepcopy(item)
+            escaped_item["cache_key"] = cache_key(28)
+            cache_directory = root / "cache" / escaped_item["cache_key"]
+            cache_directory.symlink_to(escaped_root, target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, "symbolic link"):
+                self.worker.safe_item_paths(root, escaped_item)
+
+            hls_escape_item = copy.deepcopy(item)
+            hls_escape_item["cache_key"] = cache_key(29)
+            hls_cache = root / "cache" / hls_escape_item["cache_key"]
+            hls_cache.mkdir()
+            (hls_cache / "hls").symlink_to(
+                escaped_root, target_is_directory=True
+            )
+            with self.assertRaisesRegex(RuntimeError, "HLS directory"):
+                self.worker.safe_item_paths(root, hls_escape_item)
+
+    def test_terminal_state_poll_is_throttled_without_delaying_active_queue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            progress = Path(temporary) / "progress.json"
+            with mock.patch.object(self.worker.time, "time", return_value=100.0):
+                write_json(progress, {
+                    "state": "complete",
+                    "updated_at": "1970-01-01T00:01:20Z",
+                })
+                with mock.patch.object(self.worker.time, "sleep") as sleep:
+                    delay = self.worker.throttle_idle_poll(progress)
+                self.assertEqual(10.0, delay)
+                sleep.assert_called_once_with(10.0)
+
+                write_json(progress, {
+                    "state": "idle",
+                    "updated_at": "1970-01-01T00:01:39Z",
+                })
+                with mock.patch.object(self.worker.time, "sleep") as sleep:
+                    self.assertEqual(
+                        0.0, self.worker.throttle_idle_poll(progress)
+                    )
+                sleep.assert_not_called()
+
+    def test_encoded_output_timestamp_invalidates_stale_and_supports_legacy_records(self):
+        item = {"processed_at": "2026-07-23T12:00:00Z"}
+        configuration = {"signature": "current"}
+        current_record = quality_record(
+            self.worker, cache_key(27), configuration["signature"]
+        )
+        current_item = {
+            "cache_key": current_record["cache_key"],
+            "processed_at": item["processed_at"],
+        }
+        current_record["encoded_at"] = item["processed_at"]
+
+        self.assertTrue(self.worker.encoded_output_current(
+            item,
+            {
+                "encoded_at": "2026-07-23T12:00:00Z",
+                "analyzed_at": "2026-07-23T12:01:00Z",
+            },
+        ))
+        self.assertFalse(self.worker.encoded_output_current(
+            item,
+            {
+                "encoded_at": "2026-07-23T11:59:59Z",
+                "analyzed_at": "2026-07-23T12:01:00Z",
+            },
+        ))
+        self.assertTrue(self.worker.encoded_output_current(
+            item, {"analyzed_at": "2026-07-23T12:00:01Z"}
+        ))
+        self.assertFalse(self.worker.encoded_output_current(
+            item, {"analyzed_at": "2026-07-23T11:59:59Z"}
+        ))
+        self.assertFalse(self.worker.encoded_output_current(
+            item, {"analyzed_at": "not-a-timestamp"}
+        ))
+        self.assertTrue(self.worker.encoded_output_current(
+            {}, {"encoded_at": "an-old-encoding"}
+        ))
+        self.assertTrue(self.worker.valid_record(
+            current_item, current_record, configuration
+        ))
+        current_record["encoded_at"] = "2026-07-23T11:59:59Z"
+        self.assertFalse(self.worker.valid_record(
+            current_item, current_record, configuration
+        ))
+
+    def test_interlace_detection_and_analyzer_flag_plumbing(self):
+        self.assertFalse(self.worker.source_is_interlaced({}))
+        self.assertFalse(self.worker.source_is_interlaced({
+            "video_streams": [{"field_order": "progressive"}],
+        }))
+        self.assertFalse(self.worker.source_is_interlaced({
+            "video_streams": [{"field_order": "UNKNOWN"}],
+        }))
+        self.assertTrue(self.worker.source_is_interlaced({
+            "video_streams": [{"field_order": "tt"}],
+        }))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "hls-quality-analyzer"
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            binary.chmod(0o755)
+            configuration = {
+                "threads": 2,
+                "frame_rate": 30,
+                "scene_threshold": 10.0,
+                "min_scene_seconds": 2.0,
+            }
+            item = catalog_item("interlaced", cache_key(24), 1)
+            item["primary_video_stream_index"] = 4
+            item["video_streams"] = [
+                {
+                    "index": 1,
+                    "field_order": "progressive",
+                    "default": False,
+                    "width": 320,
+                    "height": 180,
+                },
+                {
+                    "index": 4,
+                    "field_order": "bb",
+                    "default": True,
+                    "width": 1920,
+                    "height": 1080,
+                },
+            ]
+            with mock.patch.dict(
+                os.environ, {"VIDEO_QUALITY_BINARY": str(binary)}, clear=False
+            ), mock.patch.object(
+                self.worker,
+                "safe_item_paths",
+                return_value=(root / "source.mov", root / "encoded.m3u8"),
+            ), mock.patch.object(
+                self.worker.subprocess,
+                "Popen",
+                side_effect=RuntimeError("capture command"),
+            ) as popen:
+                with self.assertRaisesRegex(RuntimeError, "capture command"):
+                    self.worker.run_one(
+                        root,
+                        item,
+                        configuration,
+                        root / "data" / "progress.json",
+                        [item],
+                        {},
+                        [item],
+                        [],
+                        [],
+                    )
+
+            command = popen.call_args.args[0]
+            self.assertIn("--deinterlace-reference", command)
+            stream_option = command.index("--reference-stream-index")
+            self.assertEqual("4", command[stream_option + 1])
+
+            item["video_streams"][1]["field_order"] = "progressive"
+            with mock.patch.dict(
+                os.environ, {"VIDEO_QUALITY_BINARY": str(binary)}, clear=False
+            ), mock.patch.object(
+                self.worker,
+                "safe_item_paths",
+                return_value=(root / "source.mov", root / "encoded.m3u8"),
+            ), mock.patch.object(
+                self.worker.subprocess,
+                "Popen",
+                side_effect=RuntimeError("capture progressive command"),
+            ) as progressive_popen:
+                with self.assertRaisesRegex(
+                    RuntimeError, "capture progressive command"
+                ):
+                    self.worker.run_one(
+                        root,
+                        item,
+                        configuration,
+                        root / "data" / "progress.json",
+                        [item],
+                        {},
+                        [item],
+                        [],
+                        [],
+                    )
+            progressive_command = progressive_popen.call_args.args[0]
+            self.assertNotIn("--deinterlace-reference", progressive_command)
+            stream_option = progressive_command.index("--reference-stream-index")
+            self.assertEqual("4", progressive_command[stream_option + 1])
+
+    def test_encoder_selected_global_video_stream_is_derived_for_legacy_items(self):
+        streams = [
+            {
+                "index": 7,
+                "codec_type": "video",
+                "default": True,
+                "width": 3000,
+                "height": 3000,
+                "attached_pic": True,
+                "field_order": "progressive",
+            },
+            {
+                "index": 2,
+                "codec_type": "video",
+                "default": False,
+                "width": 3840,
+                "height": 2160,
+                "attached_pic": False,
+                "field_order": "progressive",
+            },
+            {
+                "index": 5,
+                "codec_type": "video",
+                "default": True,
+                "width": 1280,
+                "height": 720,
+                "attached_pic": False,
+                "field_order": "tt",
+            },
+        ]
+        legacy = {"video_streams": streams}
+
+        self.assertEqual(5, self.worker.reference_stream_index(legacy))
+        self.assertTrue(self.worker.source_is_interlaced(legacy))
+        self.assertEqual(
+            5,
+            self.scanner.cached_primary_video_stream(streams)["index"],
+        )
+
+        explicit = dict(legacy, primary_video_stream_index=2)
+        self.assertEqual(2, self.worker.reference_stream_index(explicit))
+        self.assertFalse(self.worker.source_is_interlaced(explicit))
+
+    def test_scanner_records_and_backfills_primary_video_stream_metadata(self):
+        raw_attached = {
+            "index": 9,
+            "codec_type": "video",
+            "codec_name": "mjpeg",
+            "width": 640,
+            "height": 640,
+            "disposition": {"attached_pic": 1, "default": 1},
+        }
+        cleaned = self.scanner.clean_stream(raw_attached)
+        self.assertTrue(cleaned["attached_pic"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary)
+            key = cache_key(29)
+            (cache_root / key).mkdir()
+            item = {
+                "cache_key": key,
+                "video_streams": [
+                    cleaned,
+                    {
+                        "index": 3,
+                        "codec_type": "video",
+                        "default": True,
+                        "width": 1920,
+                        "height": 1080,
+                        "attached_pic": False,
+                    },
+                ],
+            }
+            enriched, changed = self.scanner.add_cached_primary_video_stream_index(
+                item, cache_root
+            )
+            self.assertTrue(changed)
+            self.assertEqual(3, enriched["primary_video_stream_index"])
+            saved = json.loads(
+                (cache_root / key / "metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(3, saved["primary_video_stream_index"])
+
+    def test_expired_failure_rejoins_queue_without_starving_new_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            failed = catalog_item("failed-first", cache_key(25), 1)
+            ready = catalog_item("ready-second", cache_key(26), 2)
+            write_json(
+                root / "data" / "catalog.json",
+                {"items": [failed, ready]},
+            )
+            configuration = {
+                "signature": "current",
+                "require_content_analysis": False,
+            }
+            failure_path = root / "data" / "quality-failures.json"
+            write_json(failure_path, {
+                "items": {
+                    failed["cache_key"]: {
+                        "retry_after_epoch": time.time() + 30,
+                        "settings_signature": configuration["signature"],
+                    },
+                },
+            })
+
+            _, _, _, _, pending, _, cooling = self.worker.queue_state(
+                root, configuration
+            )
+
+            self.assertEqual(["ready-second"], [item["id"] for item in pending])
+            self.assertEqual(["failed-first"], [item["id"] for item in cooling])
+
+            write_json(failure_path, {
+                "items": {
+                    failed["cache_key"]: {
+                        "retry_after_epoch": time.time() - 1,
+                        "settings_signature": configuration["signature"],
+                    },
+                },
+            })
+            _, _, _, _, pending, _, cooling = self.worker.queue_state(
+                root, configuration
+            )
+            self.assertEqual(
+                ["ready-second", "failed-first"],
+                [item["id"] for item in pending],
+            )
+            self.assertEqual([], cooling)
 
     def test_nonblocking_lock_excludes_a_second_worker(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -769,14 +1143,44 @@ class QualityConfigurationTests(unittest.TestCase):
         self.assertEqual({
             "enabled": False,
             "items_per_run": 1,
-            "interval_seconds": 300,
-            "max_load": 1.5,
+            "interval_seconds": 1,
+            "max_load": 0.0,
             "threads": 2,
             "frame_rate": 30,
             "scene_threshold": 10.0,
             "min_scene_seconds": 2.0,
-            "failure_retry_seconds": 3600,
+            "failure_retry_seconds": 30,
         }, values["quality_analysis"])
+
+        config_without_timing = self.example()
+        del config_without_timing["quality_analysis"]["interval_seconds"]
+        del config_without_timing["quality_analysis"]["max_load"]
+        del config_without_timing["quality_analysis"]["failure_retry_seconds"]
+        defaults = self.configure.validate(
+            REPO_ROOT, EXAMPLE_CONFIG, config_without_timing
+        )["quality_analysis"]
+        self.assertEqual(1, defaults["interval_seconds"])
+        self.assertEqual(0.0, defaults["max_load"])
+        self.assertEqual(30, defaults["failure_retry_seconds"])
+
+    def test_quality_scheduler_rejects_values_below_new_minima(self):
+        cases = (
+            ("interval_seconds", 0, r"quality_analysis\.interval_seconds"),
+            ("max_load", -0.1, r"quality_analysis\.max_load"),
+            (
+                "failure_retry_seconds",
+                0,
+                r"quality_analysis\.failure_retry_seconds",
+            ),
+        )
+        for field, value, pattern in cases:
+            with self.subTest(field=field):
+                config = self.example()
+                config["quality_analysis"][field] = value
+                with self.assertRaisesRegex(
+                    self.configure.ConfigError, pattern
+                ):
+                    self.configure.validate(REPO_ROOT, EXAMPLE_CONFIG, config)
 
     def test_quality_threads_above_cap_are_rejected(self):
         config = self.example()
@@ -826,7 +1230,16 @@ class QualityConfigurationTests(unittest.TestCase):
                 ),
                 service,
             )
+            self.assertIn("VIDEO_QUALITY_MAX_LOAD=0.0", service)
+            self.assertIn("VIDEO_QUALITY_FAILURE_RETRY_SECONDS=30", service)
+            timer = (
+                output / "systemd" / "hls-gallery-quality.timer"
+            ).read_text(encoding="utf-8")
+            self.assertIn("OnUnitInactiveSec=1s", timer)
+            self.assertIn("RandomizedDelaySec=0", timer)
+            self.assertIn("AccuracySec=100ms", timer)
             self.assertNotIn("@@", service)
+            self.assertNotIn("@@", timer)
 
 
 if __name__ == "__main__":

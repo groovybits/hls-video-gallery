@@ -87,13 +87,13 @@
   "quality_analysis": {
     "enabled": false,
     "items_per_run": 1,
-    "interval_seconds": 300,
-    "max_load": 1.5,
+    "interval_seconds": 1,
+    "max_load": 0,
     "threads": 2,
     "frame_rate": 30,
     "scene_threshold": 10,
     "min_scene_seconds": 2,
-    "failure_retry_seconds": 3600
+    "failure_retry_seconds": 30
   },
   "cdn": {
     "provider": "none",

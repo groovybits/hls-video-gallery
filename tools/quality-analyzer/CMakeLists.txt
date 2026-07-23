@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(hls_quality_analyzer VERSION 1.0.0 LANGUAGES CXX)
+project(hls_quality_analyzer VERSION 1.1.0 LANGUAGES CXX)
 
 add_executable(hls-quality-analyzer src/main.cpp)
 target_compile_features(hls-quality-analyzer PRIVATE cxx_std_17)

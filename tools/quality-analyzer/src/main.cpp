@@ -37,7 +37,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr const char* kAnalyzerName = "hls-quality-analyzer";
-constexpr const char* kAnalyzerVersion = "1.0.0";
+constexpr const char* kAnalyzerVersion = "1.1.0";
 constexpr const char* kConfigVersion = "quality-composite-v1";
 constexpr std::size_t kHashWidth = 32;
 constexpr std::size_t kHashHeight = 32;
@@ -383,20 +383,26 @@ struct Options {
     fs::path distorted;
     fs::path output_directory;
     std::optional<fs::path> progress_json;
+    int reference_stream_index = -1;
     int threads = 2;
     double frame_rate = 30.0;
     double scene_threshold = 10.0;
     double min_scene_seconds = 2.0;
+    bool deinterlace_reference = false;
 };
 
 void print_usage(std::ostream& output) {
     output
         << "Usage: " << kAnalyzerName << " --reference FILE --distorted FILE --output-dir DIR [options]\n"
         << "\nOptions:\n"
+        << "  --reference-stream-index N\n"
+        << "                           Global source stream index used by the encoder\n"
+        << "                           (default: first video stream)\n"
         << "  --threads N              FFmpeg/libvmaf threads (default: 2)\n"
         << "  --frame-rate N           Aligned analysis frames per second (default: 30)\n"
         << "  --scene-threshold N      FFmpeg reference-scene threshold, 0-100 (default: 10)\n"
         << "  --min-scene-seconds N    Merge shorter scenes (default: 2)\n"
+        << "  --deinterlace-reference  Deinterlace flagged reference frames before alignment\n"
         << "  --progress-json PATH     Atomically publish live machine-readable progress\n"
         << "  --version                Show analyzer version\n"
         << "  --help                   Show this help\n";
@@ -407,6 +413,7 @@ Options parse_arguments(int argc, char** argv) {
     bool have_reference = false;
     bool have_distorted = false;
     bool have_output = false;
+    bool have_reference_stream_index = false;
     for (int index = 1; index < argc; ++index) {
         const std::string name = argv[index];
         if (name == "--help" || name == "-h") {
@@ -416,6 +423,10 @@ Options parse_arguments(int argc, char** argv) {
         if (name == "--version") {
             std::cout << kAnalyzerName << ' ' << kAnalyzerVersion << "\n";
             std::exit(0);
+        }
+        if (name == "--deinterlace-reference") {
+            options.deinterlace_reference = true;
+            continue;
         }
         if (index + 1 >= argc) throw Error("Missing value for " + name);
         const std::string value = argv[++index];
@@ -430,6 +441,9 @@ Options parse_arguments(int argc, char** argv) {
             have_output = true;
         } else if (name == "--progress-json") {
             options.progress_json = fs::path(value);
+        } else if (name == "--reference-stream-index") {
+            options.reference_stream_index = static_cast<int>(parse_integer(value, -2));
+            have_reference_stream_index = true;
         } else if (name == "--threads") {
             options.threads = static_cast<int>(parse_integer(value, -1));
         } else if (name == "--frame-rate") {
@@ -447,6 +461,10 @@ Options parse_arguments(int argc, char** argv) {
     }
     if (options.threads < 1 || options.threads > 64) {
         throw Error("--threads must be between 1 and 64");
+    }
+    if ((have_reference_stream_index && options.reference_stream_index < 0) ||
+        options.reference_stream_index > 8191) {
+        throw Error("--reference-stream-index must be between 0 and 8191");
     }
     if (options.frame_rate <= 0.0 || options.frame_rate > 120.0) {
         throw Error("--frame-rate must be greater than 0 and no more than 120");
@@ -486,9 +504,9 @@ std::string unquote_flat_value(std::string value) {
     return value;
 }
 
-VideoProbe probe_video(const fs::path& path) {
+VideoProbe probe_video(const fs::path& path, const std::string& stream_selector) {
     const std::vector<std::string> command = {
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "ffprobe", "-v", "error", "-select_streams", stream_selector,
         "-show_entries",
         "stream=width,height,avg_frame_rate,r_frame_rate,color_space,color_transfer,"
         "color_primaries,color_range,duration:stream_tags=rotate:stream_side_data=rotation:format=duration",
@@ -681,11 +699,21 @@ std::string filter_quote(const fs::path& path) {
 }
 
 std::string common_input_filter(const std::string& normalization, int width, int height,
-                                double frame_rate) {
+                                double frame_rate, bool deinterlace) {
     std::ostringstream filter;
-    filter << "settb=AVTB,setpts=PTS-STARTPTS,fps=fps=" << std::fixed
-           << std::setprecision(6) << frame_rate << ":start_time=0:round=near:eof_action=round"
-           << ',' << normalization
+    // Rebase each stream while preserving its native time base. This makes
+    // cadence selection independent of container start offsets without the
+    // rounding introduced by an early AVTB conversion.
+    filter << "setpts=PTS-STARTPTS,";
+    if (deinterlace) filter << "yadif=deint=interlaced,";
+    // Select the aligned frame while timestamps still use the decoder's native
+    // time base. Converting 60/59.94 fps sources to AVTB first can move samples
+    // across the fps filter's rounding boundary and periodically compare the
+    // encoded frame with its neighbor. Normalize the selected stream only
+    // after fps has made that decision.
+    filter << "fps=fps=" << std::fixed << std::setprecision(6) << frame_rate
+           << ":start_time=0:round=near:eof_action=round"
+           << ",settb=AVTB,setpts=PTS-STARTPTS," << normalization
            << ",scale=w=" << width << ":h=" << height << ":flags=bicubic,setsar=1";
     return filter.str();
 }
@@ -949,10 +977,10 @@ std::vector<std::string> combined_command(
 ) {
     const std::string reference_filter =
         common_input_filter(normalization.reference_filter, distorted.width, distorted.height,
-                            options.frame_rate);
+                            options.frame_rate, options.deinterlace_reference);
     const std::string distorted_filter =
         common_input_filter(normalization.distorted_filter, distorted.width, distorted.height,
-                            options.frame_rate);
+                            options.frame_rate, false);
     // libavfilter 8 performs two parsing passes over nested model options. Two
     // runtime backslashes keep each model colon intact on FFmpeg 5.1 while
     // remaining accepted by newer FFmpeg/libvmaf builds.
@@ -962,9 +990,13 @@ std::vector<std::string> combined_command(
           "version=vmaf_v0.6.1" + nested_colon + "name=vmaf_phone" +
           nested_colon + "enable_transform=true"
         : "version=vmaf_v0.6.1" + nested_colon + "name=vmaf_standard";
+    const std::string reference_label = options.reference_stream_index >= 0
+        ? "[0:" + std::to_string(options.reference_stream_index) + "]"
+        : "[0:v:0]";
     const std::string graph =
-        "[0:v]" + reference_filter + "[reference_base];" +
-        "[1:v]" + distorted_filter + "[distorted_base];" +
+        reference_label +
+        reference_filter + "[reference_base];" +
+        "[1:v:0]" + distorted_filter + "[distorted_base];" +
         "[reference_base]split=3[reference_vmaf][reference_hash][reference_scene];" +
         "[distorted_base]split=2[distorted_vmaf][distorted_hash];" +
         "[distorted_vmaf][reference_vmaf]libvmaf=log_fmt=json:log_path=" +
@@ -1328,6 +1360,10 @@ std::string build_report_json(
          << "  \"generated_at\": \"" << utc_now() << "\",\n"
          << "  \"inputs\": {\n"
          << "    \"reference\": \"" << json_escape(options.reference.filename().string()) << "\",\n"
+         << "    \"reference_stream_index\": "
+         << (options.reference_stream_index >= 0
+                 ? std::to_string(options.reference_stream_index) : "null")
+         << ",\n"
          << "    \"distorted\": \"" << json_escape(options.distorted.filename().string()) << "\"\n"
          << "  },\n"
          << "  \"settings\": {\n"
@@ -1335,6 +1371,12 @@ std::string build_report_json(
          << "    \"fps\": " << format_number(options.frame_rate, 3) << ",\n"
          << "    \"scene_threshold\": " << format_number(options.scene_threshold, 3) << ",\n"
          << "    \"min_scene_seconds\": " << format_number(options.min_scene_seconds, 3) << ",\n"
+         << "    \"deinterlace_reference\": "
+         << (options.deinterlace_reference ? "true" : "false") << ",\n"
+         << "    \"reference_stream_index\": "
+         << (options.reference_stream_index >= 0
+                 ? std::to_string(options.reference_stream_index) : "null")
+         << ",\n"
          << "    \"normalization\": \"common_bt709_display\"\n"
          << "  },\n"
          << "  \"video\": {\n"
@@ -1349,6 +1391,14 @@ std::string build_report_json(
          << "    \"distorted\": \"" << json_escape(normalization.distorted_description) << "\",\n"
          << "    \"reference_transfer\": \"" << json_escape(reference.color_transfer) << "\",\n"
          << "    \"distorted_transfer\": \"" << json_escape(distorted.color_transfer) << "\"\n"
+         << "  },\n"
+         << "  \"preprocessing\": {\n"
+         << "    \"frame_alignment\": \"fps_on_native_time_base_then_avtb_zero_origin\",\n"
+         << "    \"reference_deinterlace\": "
+         << (options.deinterlace_reference ? "true" : "false") << ",\n"
+         << "    \"reference_deinterlace_filter\": "
+         << (options.deinterlace_reference ? "\"yadif=deint=interlaced\"" : "null") << ",\n"
+         << "    \"distorted_deinterlace\": false\n"
          << "  },\n"
          << "  \"hdr_normalized\": " << (normalization.uses_hdr_tonemap ? "true" : "false") << ",\n"
          << "  \"capabilities\": {\n"
@@ -1573,7 +1623,15 @@ std::string build_report_html(
          << "</code> compared with <code>" << html_escape(options.reference.filename().string())
          << "</code> · " << std::fixed << std::setprecision(2) << duration
          << " seconds · " << frames.size() << " aligned frames at "
-         << std::setprecision(3) << options.frame_rate << " fps</p><div class=\"grid\">";
+         << std::setprecision(3) << options.frame_rate << " fps"
+         << (options.reference_stream_index >= 0
+                 ? " · global reference stream <code>" +
+                       std::to_string(options.reference_stream_index) + "</code>"
+                 : " · first reference video stream")
+         << (options.deinterlace_reference
+                 ? " · reference deinterlaced with <code>yadif=deint=interlaced</code>"
+                 : "")
+         << "</p><div class=\"grid\">";
     html << "<div class=\"metric score\"><span>Overall score</span><strong>"
          << std::fixed << std::setprecision(2) << overall.score << "</strong><small>"
          << quality_band(overall.score) << "</small></div>";
@@ -1675,14 +1733,23 @@ int run(const Options& options) {
     if (!fs::is_directory(options.output_directory))
         throw Error("Output path is not a directory: " + options.output_directory.string());
 
-    const VideoProbe reference = probe_video(options.reference);
-    const VideoProbe distorted = probe_video(options.distorted);
+    const VideoProbe reference = probe_video(
+        options.reference,
+        options.reference_stream_index >= 0
+            ? std::to_string(options.reference_stream_index) : "v:0"
+    );
+    const VideoProbe distorted = probe_video(options.distorted, "v:0");
     const double common_duration = std::min(reference.duration, distorted.duration);
     const std::size_t expected_frames = std::max<std::size_t>(
         1, static_cast<std::size_t>(std::floor(common_duration * options.frame_rate)));
     ProgressWriter progress(options, common_duration, expected_frames);
     progress.update("probing", 0.0, 0.0, 0, 0, {}, 0.0, 0.0, 0.0, true, {}, true);
 
+    if (options.deinterlace_reference && !ffmpeg_has_filter("yadif")) {
+        throw Error(
+            "--deinterlace-reference requires FFmpeg's yadif filter"
+        );
+    }
     const Normalization normalization = build_normalization(reference);
     std::vector<std::string> warnings;
     if (std::abs(reference.duration - distorted.duration) > 1.0 / options.frame_rate) {

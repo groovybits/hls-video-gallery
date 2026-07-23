@@ -119,13 +119,13 @@ gallery flag controls authenticated display.
 |---|---:|---|
 | `enabled` | `false` | Builds the C++ analyzer and enables the instance's quality timer. |
 | `items_per_run` | `1` | Maximum videos measured serially during one timer activation, 1–20. |
-| `interval_seconds` | `300` | Delay between completed timer activations, 30–86400 seconds. |
-| `max_load` | `1.5` | One-minute load ceiling; the worker waits above it. |
+| `interval_seconds` | `1` | Delay between completed timer activations, 1–86400 seconds. |
+| `max_load` | `0` | Optional one-minute load ceiling; `0` disables this gate while process/lock checks remain active. |
 | `threads` | `2` | Analyzer processing threads, restricted to 1–2. |
 | `frame_rate` | `30` | Aligned comparison frames per second, 1–120. The standard scoring baseline is 30. |
 | `scene_threshold` | `10` | FFmpeg source-scene change threshold, 0.1–100. |
 | `min_scene_seconds` | `2` | Shorter detected fragments are merged with an adjacent scene. |
-| `failure_retry_seconds` | `3600` | Cooldown before retrying one failed source/cache version. |
+| `failure_retry_seconds` | `30` | Cooldown before retrying one failed source/cache version. |
 
 When `content_analysis.enabled` is true, the rendered quality service waits for a
 current content-analysis record for each video. The installer also pins the

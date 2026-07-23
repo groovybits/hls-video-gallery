@@ -203,7 +203,9 @@ that exact source/settings version, and publishes overall, per-metric, and
 per-scene results. Its overview remains visible between timer runs, and completed
 overall, VMAF, SSIM, PSNR, and pHash scores appear on the main video cards. It
 waits for encoding and optional visual analysis instead of competing with them,
-and is capped at two CPU cores.
+is capped at two CPU cores, and checks the next queued video immediately after
+the prior run. Failed measurements use a short 30-second retry cooldown, and an
+idle or resource-waiting queue backs off to a lightweight 30-second poll.
 
 The normal dependency and application installers build the standalone C++
 analyzer when the feature is enabled:

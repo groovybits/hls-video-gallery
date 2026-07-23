@@ -235,7 +235,26 @@ they can identify source files and disclose detailed information about a video.
 The authenticated library keeps quality status visible below visual-analysis
 status even between timer runs. The main video cards show the overall score plus
 Standard VMAF, SSIM, PSNR, and pHash when a report is ready. Each video detail
-page adds the full metric summary, scene table, and timeline.
+page adds a detailed quality explorer:
+
+- overall score, Standard VMAF, normalized SSIM, normalized PSNR, pHash, Phone
+  VMAF, and temporal consistency can be compared on the same 0–100 chart;
+- the chart includes quality-band backgrounds, complete scene bands, and exact
+  HLS-segment boundaries;
+- hover, pointer, and keyboard controls inspect every individual value at one
+  aligned frame and can start playback at that moment;
+- range controls zoom to any scene or segment, or directly to the weakest scene;
+- complete scene and HLS-segment tables can be ordered chronologically or by
+  weakest score and include averages and worst deciles for every metric.
+
+The browser first requests `dashboard.json`, a compact presentation cache beside
+the normal report. The worker derives it from the existing per-frame
+`report.json` and the selected media playlist. This is an inexpensive file-only
+operation: it does not decode either video, rerun VMAF, change the encoded HLS,
+or modify the three measurement artifacts used to validate the quality cache.
+Existing reports are backfilled during normal worker runs, including idle runs.
+Until that projection exists, the browser falls back to the complete report and
+uses the configured nominal HLS duration for segment boundaries.
 
 Use the instance-specific terminal command printed by the installer:
 
@@ -254,7 +273,7 @@ systemctl start hls-gallery-my-video-gallery-quality.service
 ```
 
 Reports live below `data/quality/CACHE-KEY/`. Apache restricts that tree to the
-generated JSON, CSV, and HTML filenames. The compact
+generated dashboard, JSON, CSV, and HTML filenames. The compact
 `data/quality-cards.json` projection feeds listing cards with one request while
 the full `data/quality-index.json` remains private worker state. The gallery's
 normal authentication still applies to the card projection and reports.

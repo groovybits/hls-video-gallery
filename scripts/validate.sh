@@ -32,6 +32,8 @@ while IFS= read -r file; do
     node --check "$file"
 done < <(find "$repo_root/site/assets" -maxdepth 1 -type f -name '*.js' ! -name 'hls.min.js' -print | sort)
 
+node "$repo_root/tests/test_quality_explorer.js"
+
 while IFS= read -r file; do
     python3 -m json.tool "$file" >/dev/null
 done < <(find "$repo_root/config" "$repo_root/presets" "$repo_root/site/data" -type f -name '*.json' -print | sort)

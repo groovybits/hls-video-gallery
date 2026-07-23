@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 
 
 WORKER_VERSION = "gallery-quality-v2"
+DASHBOARD_SCHEMA_VERSION = 1
+DASHBOARD_POINT_LIMIT = 7000
 CACHE_KEY = re.compile(r"^[0-9a-f]{18}--[0-9a-f]{14}$")
 BUILD_DIRECTORY = re.compile(
     r"^\.building-[0-9a-f]{18}--[0-9a-f]{14}-[A-Za-z0-9_-]+$"
@@ -51,6 +53,70 @@ CARD_SUMMARY_FIELDS = (
     "psnr_y",
     "phash_similarity",
 )
+DASHBOARD_METRICS = (
+    "composite",
+    "vmaf_standard",
+    "vmaf_phone",
+    "ssim",
+    "ssim_normalized",
+    "psnr_y",
+    "psnr_normalized",
+    "phash_similarity",
+    "temporal_consistency",
+)
+DASHBOARD_METRIC_DEFINITIONS = {
+    "composite": {
+        "label": "Overall score",
+        "unit": "score",
+        "domain": [0, 100],
+        "primary": True,
+    },
+    "vmaf_standard": {
+        "label": "Standard VMAF",
+        "unit": "score",
+        "domain": [0, 100],
+        "primary": True,
+    },
+    "vmaf_phone": {
+        "label": "Phone VMAF",
+        "unit": "score",
+        "domain": [0, 100],
+        "informational": True,
+    },
+    "ssim": {
+        "label": "SSIM",
+        "unit": "ratio",
+        "domain": [0, 1],
+        "compare_field": "ssim_normalized",
+    },
+    "ssim_normalized": {
+        "label": "SSIM normalized",
+        "unit": "score",
+        "domain": [0, 100],
+    },
+    "psnr_y": {
+        "label": "PSNR Y",
+        "unit": "dB",
+        "compare_field": "psnr_normalized",
+    },
+    "psnr_normalized": {
+        "label": "PSNR normalized",
+        "unit": "score",
+        "domain": [0, 100],
+    },
+    "phash_similarity": {
+        "label": "pHash similarity",
+        "unit": "score",
+        "domain": [0, 100],
+    },
+    "temporal_consistency": {
+        "label": "Temporal pHash",
+        "unit": "score",
+        "domain": [0, 100],
+        "informational": True,
+    },
+}
+MAX_PLAYLIST_BYTES = 8 * 1024 * 1024
 
 
 def utc_iso(timestamp=None):
@@ -199,6 +265,62 @@ def active_resource_reason(root):
     return ""
 
 
+def selected_hls_variant(item):
+    variants = item.get("hls_variants")
+    if isinstance(variants, list):
+        variants = [value for value in variants if isinstance(value, dict)]
+    else:
+        variants = []
+    return max(
+        variants,
+        key=lambda value: (
+            integer(value.get("height")),
+            integer(value.get("width")),
+            integer(value.get("video_bitrate")),
+        ),
+        default=None,
+    )
+
+
+def safe_cached_hls_playlist(root, item, require_media_playlist=False):
+    cache_key = str(item.get("cache_key") or "")
+    if not CACHE_KEY.fullmatch(cache_key):
+        raise RuntimeError("catalog item has an invalid cache identity")
+    cache_root = (root / "cache").resolve()
+    cache_candidate = cache_root / cache_key
+    if cache_candidate.is_symlink():
+        raise RuntimeError("encoded cache directory is a symbolic link")
+    cache_dir = cache_candidate.resolve()
+    try:
+        cache_dir.relative_to(cache_root)
+    except ValueError:
+        raise RuntimeError("encoded cache path escapes the cache directory")
+    hls_candidate = cache_dir / "hls"
+    if hls_candidate.is_symlink():
+        raise RuntimeError("encoded HLS directory is a symbolic link")
+    hls_root = hls_candidate.resolve()
+    try:
+        hls_root.relative_to(cache_dir)
+    except ValueError:
+        raise RuntimeError("encoded HLS path escapes the cache directory")
+
+    selected = selected_hls_variant(item)
+    playlist = str(selected.get("playlist") or "") if selected else ""
+    if require_media_playlist and (selected is None or not playlist):
+        raise RuntimeError("catalog item does not identify its analyzed HLS media playlist")
+    playlist_candidate = hls_root / (playlist if playlist else "master.m3u8")
+    if playlist_candidate.is_symlink():
+        raise RuntimeError("encoded HLS playlist is a symbolic link")
+    distorted = playlist_candidate.resolve()
+    try:
+        distorted.relative_to(hls_root)
+    except ValueError:
+        raise RuntimeError("encoded cache path escapes the cache directory")
+    if not distorted.is_file():
+        raise RuntimeError("encoded HLS comparison playlist is missing")
+    return selected, distorted, hls_root
+
+
 def safe_item_paths(root, item):
     relative = str(item.get("source_relative") or "")
     cache_key = str(item.get("cache_key") or "")
@@ -215,50 +337,120 @@ def safe_item_paths(root, item):
         raise RuntimeError("catalog source escapes the media directory")
     if not source.is_file() or source.is_symlink():
         raise RuntimeError("catalog source is missing or unsafe")
-    cache_root = (root / "cache").resolve()
-    cache_candidate = cache_root / cache_key
-    if cache_candidate.is_symlink():
-        raise RuntimeError("encoded cache directory is a symbolic link")
-    cache_dir = cache_candidate.resolve()
-    try:
-        cache_dir.relative_to(cache_root)
-    except ValueError:
-        raise RuntimeError("encoded cache path escapes the cache directory")
-    variants = item.get("hls_variants")
-    if isinstance(variants, list):
-        variants = [value for value in variants if isinstance(value, dict)]
-    else:
-        variants = []
-    selected = max(
-        variants,
-        key=lambda value: (
-            integer(value.get("height")),
-            integer(value.get("width")),
-            integer(value.get("video_bitrate")),
-        ),
-        default=None,
-    )
-    playlist = str(selected.get("playlist") or "") if selected else ""
-    hls_candidate = cache_dir / "hls"
-    if hls_candidate.is_symlink():
-        raise RuntimeError("encoded HLS directory is a symbolic link")
-    hls_root = hls_candidate.resolve()
-    try:
-        hls_root.relative_to(cache_dir)
-    except ValueError:
-        raise RuntimeError("encoded HLS path escapes the cache directory")
-    distorted = (
-        hls_root / playlist
-        if playlist
-        else hls_root / "master.m3u8"
-    ).resolve()
-    try:
-        distorted.relative_to(hls_root)
-    except ValueError:
-        raise RuntimeError("encoded cache path escapes the cache directory")
-    if not distorted.is_file():
-        raise RuntimeError("encoded HLS comparison playlist is missing")
+    _selected, distorted, _hls_root = safe_cached_hls_playlist(root, item)
     return source, distorted
+
+
+def safe_hls_segment_path(playlist, hls_root, uri):
+    value = str(uri or "").strip()
+    if (
+        not value
+        or "\0" in value
+        or "\\" in value
+        or "?" in value
+        or "#" in value
+        or "://" in value
+        or value.startswith("/")
+    ):
+        raise RuntimeError("HLS segment URI is not a safe local relative path")
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise RuntimeError("HLS segment URI escapes its media cache")
+    candidate = playlist.parent.joinpath(*parts)
+    if candidate.is_symlink():
+        raise RuntimeError("HLS segment is a symbolic link")
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(hls_root)
+    except ValueError:
+        raise RuntimeError("HLS segment URI escapes its media cache")
+    if not resolved.is_file():
+        raise RuntimeError("HLS segment listed by the media playlist is missing")
+    return resolved
+
+
+def parse_hls_media_playlist(playlist, hls_root=None):
+    playlist = Path(playlist)
+    if playlist.is_symlink() or not playlist.is_file():
+        raise RuntimeError("HLS media playlist is missing or unsafe")
+    size = playlist.stat().st_size
+    if size <= 0 or size > MAX_PLAYLIST_BYTES:
+        raise RuntimeError("HLS media playlist has an invalid size")
+    hls_root = Path(hls_root or playlist.parent).resolve()
+    try:
+        playlist.resolve().relative_to(hls_root)
+    except ValueError:
+        raise RuntimeError("HLS media playlist escapes its cache")
+    try:
+        lines = playlist.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError("HLS media playlist could not be read: {}".format(error))
+    first = next((line.strip() for line in lines if line.strip()), "")
+    if first != "#EXTM3U":
+        raise RuntimeError("HLS media playlist is missing EXTM3U")
+
+    media_sequence = 0
+    have_media_sequence = False
+    target_duration = None
+    pending_duration = None
+    segments = []
+    elapsed = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+            if have_media_sequence or segments or pending_duration is not None:
+                raise RuntimeError("HLS media sequence is duplicated or out of order")
+            value = line.split(":", 1)[1].strip()
+            if not re.fullmatch(r"[0-9]+", value):
+                raise RuntimeError("HLS media sequence is invalid")
+            media_sequence = int(value)
+            have_media_sequence = True
+            continue
+        if line.startswith("#EXT-X-TARGETDURATION:"):
+            value = finite_number(line.split(":", 1)[1].strip())
+            if value is None or value <= 0:
+                raise RuntimeError("HLS target duration is invalid")
+            target_duration = value
+            continue
+        if line.startswith("#EXTINF:"):
+            if pending_duration is not None:
+                raise RuntimeError("HLS media playlist has an EXTINF without a segment URI")
+            value = finite_number(line.split(":", 1)[1].split(",", 1)[0].strip())
+            if value is None or value <= 0:
+                raise RuntimeError("HLS segment duration is invalid")
+            pending_duration = value
+            continue
+        if line.startswith("#"):
+            continue
+        if pending_duration is None:
+            raise RuntimeError("HLS media playlist contains a URI without EXTINF")
+        segment_path = safe_hls_segment_path(playlist, hls_root, line)
+        start = math.fsum(elapsed)
+        elapsed.append(pending_duration)
+        end = math.fsum(elapsed)
+        index = len(segments)
+        segments.append({
+            "index": index,
+            "sequence": media_sequence + index,
+            "uri": line,
+            "start_seconds": start,
+            "end_seconds": end,
+            "duration_seconds": pending_duration,
+            "size_bytes": segment_path.stat().st_size,
+        })
+        pending_duration = None
+    if pending_duration is not None:
+        raise RuntimeError("HLS media playlist ends before the EXTINF segment URI")
+    if not segments:
+        raise RuntimeError("HLS media playlist contains no media segments")
+    return {
+        "media_sequence": media_sequence,
+        "target_duration_seconds": target_duration,
+        "duration_seconds": math.fsum(elapsed),
+        "segments": segments,
+    }
 
 
 def settings():
@@ -432,6 +624,478 @@ def artifact_state(path):
         "size": stat_result.st_size,
         "mtime_ns": stat_result.st_mtime_ns,
     }
+
+
+def quality_band(score):
+    value = finite_number(score)
+    if value is None:
+        return "Unrated"
+    if value >= 90:
+        return "Excellent"
+    if value >= 80:
+        return "Very good"
+    if value >= 70:
+        return "Good"
+    if value >= 55:
+        return "Fair"
+    return "Poor"
+
+
+def dashboard_metric_summary(frames, metric):
+    values = sorted(
+        value
+        for value in (finite_number(frame.get(metric)) for frame in frames)
+        if value is not None
+    )
+    if not values:
+        return {
+            "mean": None,
+            "worst_decile": None,
+            "min": None,
+            "max": None,
+        }
+    count = max(1, int(math.ceil(len(values) * 0.10)))
+    return {
+        "mean": round(sum(values) / len(values), 9),
+        "worst_decile": round(sum(values[:count]) / count, 9),
+        "min": round(values[0], 9),
+        "max": round(values[-1], 9),
+    }
+
+
+def dashboard_interval_summary(frames):
+    metrics = {
+        metric: dashboard_metric_summary(frames, metric)
+        for metric in DASHBOARD_METRICS
+    }
+    composite = metrics["composite"]
+    score = None
+    if (
+        composite["mean"] is not None
+        and composite["worst_decile"] is not None
+    ):
+        score = round(
+            0.70 * composite["mean"] + 0.30 * composite["worst_decile"],
+            6,
+        )
+    return {
+        "frame_count": len(frames),
+        "score": score,
+        "band": quality_band(score),
+        "metrics": metrics,
+    }
+
+
+def normalized_dashboard_frames(report):
+    raw_frames = report.get("frames") if isinstance(report, dict) else None
+    if not isinstance(raw_frames, list) or not raw_frames:
+        raise RuntimeError("quality report does not contain full frame measurements")
+    frames = []
+    for position, raw in enumerate(raw_frames):
+        if not isinstance(raw, dict):
+            continue
+        timestamp = finite_number(raw.get("time_seconds"))
+        if timestamp is None or timestamp < 0:
+            continue
+        frame = {
+            "frame": integer(raw.get("frame"), position),
+            "time_seconds": timestamp,
+            "scene_index": max(
+                0, integer(
+                    raw.get("scene")
+                    if raw.get("scene") is not None
+                    else raw.get("scene_index"),
+                    0,
+                ),
+            ),
+        }
+        aliases = {
+            "composite": ("composite", "score"),
+            "vmaf_standard": ("vmaf_standard", "vmaf", "standard_vmaf"),
+            "vmaf_phone": ("vmaf_phone", "phone_vmaf"),
+            "ssim": ("ssim", "ssim_y"),
+            "ssim_normalized": ("ssim_normalized",),
+            "psnr_y": ("psnr_y", "psnr"),
+            "psnr_normalized": ("psnr_normalized",),
+            "phash_similarity": ("phash_similarity", "phash"),
+            "temporal_consistency": (
+                "temporal_consistency",
+                "temporal_phash",
+            ),
+        }
+        for metric, names in aliases.items():
+            value = None
+            for name in names:
+                value = finite_number(raw.get(name))
+                if value is not None:
+                    break
+            frame[metric] = value
+        frames.append(frame)
+    if not frames:
+        raise RuntimeError("quality report contains no usable frame measurements")
+    frames.sort(key=lambda value: (value["time_seconds"], value["frame"]))
+    return frames
+
+
+def dashboard_scene_rows(report, frames):
+    raw_scenes = report.get("scenes") if isinstance(report, dict) else None
+    if not isinstance(raw_scenes, list) or not raw_scenes:
+        raise RuntimeError("quality report does not contain scene measurements")
+    rows = []
+    for position, raw in enumerate(raw_scenes):
+        if not isinstance(raw, dict):
+            continue
+        index = max(1, integer(raw.get("index"), position + 1))
+        start_frame = integer(raw.get("start_frame"), -1)
+        end_frame = integer(raw.get("end_frame"), -1)
+        if start_frame >= 0 and end_frame > start_frame:
+            selected = [
+                frame for frame in frames
+                if start_frame <= frame["frame"] < end_frame
+            ]
+        else:
+            selected = [
+                frame for frame in frames
+                if frame["scene_index"] == index
+            ]
+        start = finite_number(raw.get("start_seconds"))
+        end = finite_number(raw.get("end_seconds"))
+        if start is None:
+            start = selected[0]["time_seconds"] if selected else 0.0
+        if end is None:
+            duration = finite_number(raw.get("duration_seconds"))
+            end = start + duration if duration is not None else start
+        if end < start:
+            start, end = end, start
+        row = {
+            "index": index,
+            "start_frame": start_frame if start_frame >= 0 else None,
+            "end_frame": end_frame if end_frame >= 0 else None,
+            "start_seconds": round(start, 9),
+            "end_seconds": round(end, 9),
+            "duration_seconds": round(max(0.0, end - start), 9),
+            "scene_change_strength": finite_number(
+                raw.get("scene_change_strength")
+            ),
+        }
+        row.update(dashboard_interval_summary(selected))
+        rows.append(row)
+    return rows
+
+
+def dashboard_segment_rows(playlist_data, frames):
+    raw_segments = playlist_data.get("segments")
+    if not isinstance(raw_segments, list) or not raw_segments:
+        raise RuntimeError("HLS media playlist contains no segment rows")
+    rows = []
+    frame_position = 0
+    for position, raw in enumerate(raw_segments):
+        start = number(raw.get("start_seconds"))
+        end = number(raw.get("end_seconds"))
+        while (
+            frame_position < len(frames)
+            and frames[frame_position]["time_seconds"] < start
+        ):
+            frame_position += 1
+        end_position = frame_position
+        is_last = position + 1 == len(raw_segments)
+        while end_position < len(frames):
+            timestamp = frames[end_position]["time_seconds"]
+            if timestamp < end or (
+                is_last and timestamp <= end + 0.000001
+            ):
+                end_position += 1
+                continue
+            break
+        selected = frames[frame_position:end_position]
+        frame_position = end_position
+        duration = number(raw.get("duration_seconds"))
+        size_bytes = max(0, integer(raw.get("size_bytes")))
+        row = {
+            "index": max(0, integer(raw.get("index"), position)),
+            "sequence": max(0, integer(raw.get("sequence"), position)),
+            "uri": str(raw.get("uri") or ""),
+            "start_seconds": round(start, 9),
+            "end_seconds": round(end, 9),
+            "duration_seconds": round(duration, 9),
+            "size_bytes": size_bytes,
+            "bitrate_bps": round(
+                size_bytes * 8.0 / duration
+            ) if size_bytes and duration > 0 else 0,
+            "scene_indexes": sorted({
+                frame["scene_index"]
+                for frame in selected
+                if frame["scene_index"] > 0
+            }),
+        }
+        row.update(dashboard_interval_summary(selected))
+        rows.append(row)
+    return rows
+
+
+def dashboard_segment_index(timestamp, segments, start_index=0):
+    index = max(0, start_index)
+    while (
+        index < len(segments)
+        and timestamp >= number(segments[index].get("end_seconds"))
+    ):
+        index += 1
+    if index >= len(segments):
+        return None, index
+    segment = segments[index]
+    if (
+        timestamp < number(segment.get("start_seconds"))
+        or timestamp >= number(segment.get("end_seconds"))
+    ):
+        return None, index
+    return integer(segment.get("index"), index), index
+
+
+def metric_aware_overview_points(
+    frames, segments, limit=DASHBOARD_POINT_LIMIT
+):
+    limit = max(2, integer(limit, DASHBOARD_POINT_LIMIT))
+    selected_indexes = set()
+    if len(frames) <= limit:
+        selected_indexes.update(range(len(frames)))
+    else:
+        active_metrics = [
+            metric for metric in DASHBOARD_METRICS
+            if any(frame.get(metric) is not None for frame in frames)
+        ]
+        active_metrics = active_metrics or ["composite"]
+        selected_indexes.update({0, len(frames) - 1})
+        bucket_count = max(
+            1, (limit - len(selected_indexes)) // (2 * len(active_metrics))
+        )
+        interior = max(0, len(frames) - 2)
+        for bucket in range(bucket_count):
+            start = 1 + bucket * interior // bucket_count
+            end = 1 + (bucket + 1) * interior // bucket_count
+            if end <= start:
+                continue
+            for metric in active_metrics:
+                candidates = [
+                    index for index in range(start, end)
+                    if frames[index].get(metric) is not None
+                ]
+                if not candidates:
+                    continue
+                selected_indexes.add(min(
+                    candidates, key=lambda index: frames[index][metric]
+                ))
+                selected_indexes.add(max(
+                    candidates, key=lambda index: frames[index][metric]
+                ))
+    indexes = sorted(selected_indexes)
+    if len(indexes) > limit:
+        indexes = indexes[:limit - 1] + [indexes[-1]]
+
+    points = []
+    segment_position = 0
+    for index in indexes:
+        frame = frames[index]
+        segment_index, segment_position = dashboard_segment_index(
+            frame["time_seconds"], segments, segment_position
+        )
+        point = {
+            "frame": frame["frame"],
+            "time_seconds": round(frame["time_seconds"], 9),
+            "scene_index": frame["scene_index"],
+            "segment_index": segment_index,
+        }
+        for metric in DASHBOARD_METRICS:
+            point[metric] = frame.get(metric)
+        points.append(point)
+    return points
+
+
+def dashboard_report_paths(root, item):
+    cache_key = str(item.get("cache_key") or "")
+    if not CACHE_KEY.fullmatch(cache_key):
+        raise RuntimeError("catalog item has an invalid cache identity")
+    quality_candidate = root / "data" / "quality"
+    if quality_candidate.is_symlink():
+        raise RuntimeError("quality report root is a symbolic link")
+    quality_root = quality_candidate.resolve()
+    report_candidate = quality_root / cache_key
+    if report_candidate.is_symlink():
+        raise RuntimeError("quality report directory is a symbolic link")
+    report_root = report_candidate.resolve()
+    try:
+        report_root.relative_to(quality_root)
+    except ValueError:
+        raise RuntimeError("quality report directory escapes its cache")
+    report_path = report_root / "report.json"
+    if report_path.is_symlink() or not report_path.is_file():
+        raise RuntimeError("quality report is missing or unsafe")
+    dashboard_path = report_root / "dashboard.json"
+    if dashboard_path.is_symlink():
+        raise RuntimeError("quality dashboard cannot be a symbolic link")
+    return report_path, dashboard_path
+
+
+def dashboard_fingerprint(report_path, playlist_path, item, variant):
+    report_state = artifact_state(report_path)
+    playlist_state = artifact_state(playlist_path)
+    if report_state is None or playlist_state is None:
+        raise RuntimeError("quality dashboard source artifacts are missing")
+    identity = {
+        "dashboard_schema_version": DASHBOARD_SCHEMA_VERSION,
+        "cache_key": str(item.get("cache_key") or ""),
+        "playlist": str((variant or {}).get("playlist") or ""),
+        "report": report_state,
+        "media_playlist": playlist_state,
+    }
+    canonical = json.dumps(
+        identity, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest(), identity
+
+
+def dashboard_rendition(variant, playlist_data):
+    source = variant if isinstance(variant, dict) else {}
+    value = {
+        key: source.get(key)
+        for key in (
+            "name",
+            "playlist",
+            "width",
+            "height",
+            "frame_rate",
+            "video_bitrate",
+            "audio_bitrate",
+            "bandwidth",
+        )
+        if source.get(key) is not None
+    }
+    value.update({
+        "media_sequence": playlist_data.get("media_sequence"),
+        "target_duration_seconds": playlist_data.get(
+            "target_duration_seconds"
+        ),
+        "duration_seconds": playlist_data.get("duration_seconds"),
+        "segment_count": len(playlist_data.get("segments") or []),
+    })
+    return value
+
+
+def build_quality_dashboard(
+    report, item, variant, playlist_data, fingerprint, fingerprint_sources
+):
+    frames = normalized_dashboard_frames(report)
+    segments = dashboard_segment_rows(playlist_data, frames)
+    scenes = dashboard_scene_rows(report, frames)
+    overview = metric_aware_overview_points(frames, segments)
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+    video = report.get("video")
+    if not isinstance(video, dict):
+        video = {}
+    return {
+        "schema_version": DASHBOARD_SCHEMA_VERSION,
+        "generated_at": utc_iso(),
+        "fingerprint": fingerprint,
+        "source": {
+            "cache_key": str(item.get("cache_key") or ""),
+            "report_schema_version": report.get("schema_version"),
+            "analyzer_version": report.get("analyzer_version"),
+            "report_generated_at": report.get("generated_at"),
+            "artifacts": fingerprint_sources,
+        },
+        "summary": summary,
+        "hdr_normalized": report_is_hdr_normalized(report),
+        "video": {
+            key: video.get(key)
+            for key in (
+                "width",
+                "height",
+                "duration_seconds",
+                "frames_analyzed",
+                "reference_source_fps",
+                "distorted_source_fps",
+            )
+            if video.get(key) is not None
+        },
+        "rendition": dashboard_rendition(variant, playlist_data),
+        "metric_definitions": DASHBOARD_METRIC_DEFINITIONS,
+        "overview": {
+            "sample_method": "metric_min_max_envelope",
+            "point_limit": DASHBOARD_POINT_LIMIT,
+            "source_frame_count": len(frames),
+            "point_count": len(overview),
+            "points": overview,
+        },
+        "scenes": scenes,
+        "hls_segments": segments,
+    }
+
+
+def ensure_quality_dashboard(root, item):
+    report_path, dashboard_path = dashboard_report_paths(root, item)
+    variant, playlist_path, hls_root = safe_cached_hls_playlist(
+        root, item, require_media_playlist=True
+    )
+    fingerprint, sources = dashboard_fingerprint(
+        report_path, playlist_path, item, variant
+    )
+    current = load_json(dashboard_path, None)
+    if (
+        isinstance(current, dict)
+        and integer(current.get("schema_version"), -1)
+            == DASHBOARD_SCHEMA_VERSION
+        and current.get("fingerprint") == fingerprint
+        and isinstance(current.get("overview"), dict)
+        and isinstance(current.get("scenes"), list)
+        and isinstance(current.get("hls_segments"), list)
+    ):
+        return False
+
+    report = load_json(report_path, None)
+    if not isinstance(report, dict):
+        raise RuntimeError("quality report is not valid JSON")
+    gallery = report.get("gallery")
+    if isinstance(gallery, dict):
+        if (
+            gallery.get("video_id")
+            and str(gallery["video_id"]) != str(item.get("id"))
+        ):
+            raise RuntimeError("quality report belongs to a different video")
+        if (
+            gallery.get("cache_key")
+            and gallery["cache_key"] != item.get("cache_key")
+        ):
+            raise RuntimeError("quality report belongs to a different cache")
+    playlist_data = parse_hls_media_playlist(playlist_path, hls_root)
+    dashboard = build_quality_dashboard(
+        report, item, variant, playlist_data, fingerprint, sources
+    )
+    atomic_write_json(dashboard_path, dashboard, mode=0o644)
+    return True
+
+
+def backfill_quality_dashboards(root, items, records):
+    by_id = {
+        str(item.get("id")): item
+        for item in items
+        if isinstance(item, dict) and item.get("id")
+    }
+    result = {"generated": 0, "cached": 0, "errors": []}
+    for item_id in sorted(records):
+        item = by_id.get(str(item_id))
+        if item is None or not isinstance(records.get(item_id), dict):
+            continue
+        try:
+            generated = ensure_quality_dashboard(root, item)
+        except Exception as error:
+            result["errors"].append({
+                "video_id": str(item_id),
+                "error": str(error)[-1000:],
+            })
+            continue
+        result["generated" if generated else "cached"] += 1
+    return result
 
 
 def report_artifacts_ready(root, item, record):
@@ -939,7 +1603,15 @@ def run_one(root, item, configuration, progress_path, items, records, pending, w
             )
         report = enrich_report(build_dir / "report.json", item, configuration)
         install_report_tree(build_dir, quality_root / item["cache_key"])
-        return report, time.time() - started
+        measurement_elapsed = time.time() - started
+        try:
+            ensure_quality_dashboard(root, item)
+        except Exception:
+            # dashboard.json is a replaceable presentation cache. A malformed
+            # playlist or derived view must never turn a successful objective
+            # measurement into a failed/retried quality-analysis job.
+            pass
+        return report, measurement_elapsed
     finally:
         if process is not None and process.poll() is None:
             process.terminate()
@@ -1137,6 +1809,10 @@ def main():
         catalog, items, records, failures, pending, waiting_content, cooling_down = queue_state(
             root, configuration, force=arguments.force and not arguments.video_id,
         )
+        # Presentation data is derived only from immutable completed reports and
+        # media playlists. Backfill it during ordinary and idle worker runs, but
+        # never let one damaged report affect measurement queue validity.
+        backfill_quality_dashboards(root, items, records)
         execution_pending = pending
         if arguments.video_id:
             requested = str(arguments.video_id)

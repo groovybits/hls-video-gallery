@@ -77,6 +77,109 @@ def create_report_artifacts(root, key, report=None):
     return artifacts
 
 
+def synthetic_quality_report(values, scene_split=None):
+    split = scene_split if scene_split is not None else max(1, len(values) // 2)
+    frames = []
+    for index, value in enumerate(values):
+        frames.append({
+            "frame": index,
+            "time_seconds": float(index),
+            "scene": 1 if index < split else 2,
+            "composite": float(value),
+            "vmaf_standard": float(value) + 1,
+            "vmaf_phone": float(value) + 2,
+            "ssim": float(value) / 100,
+            "ssim_normalized": float(value),
+            "psnr_y": 20 + float(value) * 0.3,
+            "psnr_normalized": float(value),
+            "phash_similarity": float(value) + 3,
+            "temporal_consistency": float(value) + 4,
+        })
+    scenes = [{
+        "index": 1,
+        "start_frame": 0,
+        "end_frame": split,
+        "start_seconds": 0,
+        "end_seconds": float(split),
+        "duration_seconds": float(split),
+        "scene_change_strength": 0,
+    }]
+    if split < len(values):
+        scenes.append({
+            "index": 2,
+            "start_frame": split,
+            "end_frame": len(values),
+            "start_seconds": float(split),
+            "end_seconds": float(len(values)),
+            "duration_seconds": float(len(values) - split),
+            "scene_change_strength": 22.5,
+        })
+    return {
+        "schema_version": 1,
+        "analyzer_version": "1.1.0",
+        "generated_at": "2026-07-23T12:00:00Z",
+        "hdr_normalized": True,
+        "summary": {
+            "score": 72.5,
+            "band": "Good",
+            "vmaf_standard": 75.0,
+            "vmaf_phone": 80.0,
+            "ssim": 0.95,
+            "ssim_normalized": 95.0,
+            "psnr_y": 38.0,
+            "psnr_normalized": 60.0,
+            "phash_similarity": 96.0,
+            "temporal_consistency": 97.0,
+        },
+        "video": {
+            "width": 1920,
+            "height": 1080,
+            "duration_seconds": float(len(values)),
+            "frames_analyzed": len(values),
+            "reference_source_fps": 1,
+            "distorted_source_fps": 1,
+        },
+        "frames": frames,
+        "scenes": scenes,
+    }
+
+
+def create_hls_media_cache(root, item, durations, media_sequence=0):
+    variant = {
+        "name": "1080p",
+        "playlist": "1080p/index.m3u8",
+        "width": 1920,
+        "height": 1080,
+        "frame_rate": 30,
+        "video_bitrate": 6_500_000,
+        "audio_bitrate": 160_000,
+        "bandwidth": 7_180_000,
+    }
+    item["hls_variants"] = [variant]
+    media_root = root / "cache" / item["cache_key"] / "hls"
+    playlist = media_root / variant["playlist"]
+    playlist.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        "#EXT-X-TARGETDURATION:{}".format(int(max(durations) + 0.999)),
+        "#EXT-X-MEDIA-SEQUENCE:{}".format(media_sequence),
+        "#EXT-X-PLAYLIST-TYPE:VOD",
+    ]
+    for index, duration in enumerate(durations):
+        filename = "seg-{:06d}.ts".format(index)
+        (playlist.parent / filename).write_bytes(
+            bytes([index + 1]) * (index + 2)
+        )
+        lines.extend([
+            "#EXTINF:{:.6f},".format(duration),
+            filename,
+        ])
+    lines.append("#EXT-X-ENDLIST")
+    playlist.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return playlist
+
+
 class QualityWorkerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -797,6 +900,316 @@ class QualityWorkerTests(unittest.TestCase):
 
         self.assertEqual(0.0, payload["percent"])
         self.assertEqual(1, payload["waiting_content_count"])
+
+    def test_hls_media_playlist_parser_uses_exact_extinf_and_media_sequence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            item = catalog_item("video", cache_key(30), 1)
+            playlist = create_hls_media_cache(
+                root, item, [6.006, 3.25], media_sequence=41
+            )
+            hls_root = root / "cache" / item["cache_key"] / "hls"
+
+            parsed = self.worker.parse_hls_media_playlist(
+                playlist, hls_root
+            )
+
+            self.assertEqual(41, parsed["media_sequence"])
+            self.assertAlmostEqual(9.256, parsed["duration_seconds"])
+            self.assertEqual(
+                [41, 42],
+                [segment["sequence"] for segment in parsed["segments"]],
+            )
+            self.assertEqual(
+                ["seg-000000.ts", "seg-000001.ts"],
+                [segment["uri"] for segment in parsed["segments"]],
+            )
+            self.assertAlmostEqual(
+                6.006, parsed["segments"][1]["start_seconds"]
+            )
+            self.assertAlmostEqual(
+                3.25, parsed["segments"][1]["duration_seconds"]
+            )
+            self.assertEqual(2, parsed["segments"][0]["size_bytes"])
+            self.assertEqual(3, parsed["segments"][1]["size_bytes"])
+
+            escaped = playlist.parent / "unsafe.m3u8"
+            escaped.write_text(
+                "#EXTM3U\n#EXTINF:1.0,\n../escape.ts\n",
+                encoding="utf-8",
+            )
+            (hls_root / "escape.ts").write_bytes(b"unsafe")
+            with self.assertRaisesRegex(RuntimeError, "escapes"):
+                self.worker.parse_hls_media_playlist(escaped, hls_root)
+
+    def test_dashboard_derives_all_scene_and_hls_metric_aggregates(self):
+        report = synthetic_quality_report(
+            [100, 80, 60, 40, 20, 0], scene_split=2
+        )
+        item = catalog_item("video", cache_key(31), 1, duration=6)
+        variant = {
+            "name": "1080p",
+            "playlist": "1080p/index.m3u8",
+            "width": 1920,
+            "height": 1080,
+            "frame_rate": 30,
+            "video_bitrate": 6_500_000,
+        }
+        playlist_data = {
+            "media_sequence": 7,
+            "target_duration_seconds": 3,
+            "duration_seconds": 6,
+            "segments": [
+                {
+                    "index": 0,
+                    "sequence": 7,
+                    "uri": "seg-000000.ts",
+                    "start_seconds": 0,
+                    "end_seconds": 3,
+                    "duration_seconds": 3,
+                    "size_bytes": 300,
+                },
+                {
+                    "index": 1,
+                    "sequence": 8,
+                    "uri": "seg-000001.ts",
+                    "start_seconds": 3,
+                    "end_seconds": 6,
+                    "duration_seconds": 3,
+                    "size_bytes": 600,
+                },
+            ],
+        }
+
+        dashboard = self.worker.build_quality_dashboard(
+            report,
+            item,
+            variant,
+            playlist_data,
+            "fingerprint",
+            {"report": {"size": 10}, "media_playlist": {"size": 20}},
+        )
+
+        self.assertEqual(
+            self.worker.DASHBOARD_SCHEMA_VERSION,
+            dashboard["schema_version"],
+        )
+        self.assertTrue(dashboard["hdr_normalized"])
+        self.assertEqual(report["summary"], dashboard["summary"])
+        self.assertEqual(7, dashboard["rendition"]["media_sequence"])
+        self.assertEqual(2, dashboard["rendition"]["segment_count"])
+        self.assertEqual(2, len(dashboard["scenes"]))
+        self.assertEqual(2, len(dashboard["hls_segments"]))
+
+        first_segment = dashboard["hls_segments"][0]
+        self.assertEqual(3, first_segment["frame_count"])
+        self.assertEqual([1, 2], first_segment["scene_indexes"])
+        self.assertAlmostEqual(
+            80.0, first_segment["metrics"]["composite"]["mean"]
+        )
+        self.assertAlmostEqual(
+            60.0,
+            first_segment["metrics"]["composite"]["worst_decile"],
+        )
+        self.assertAlmostEqual(60.0, first_segment["metrics"]["composite"]["min"])
+        self.assertAlmostEqual(100.0, first_segment["metrics"]["composite"]["max"])
+        self.assertAlmostEqual(74.0, first_segment["score"])
+        self.assertEqual("Good", first_segment["band"])
+        self.assertEqual(800, first_segment["bitrate_bps"])
+
+        second_segment = dashboard["hls_segments"][1]
+        self.assertAlmostEqual(14.0, second_segment["score"])
+        self.assertEqual("Poor", second_segment["band"])
+        for metric in self.worker.DASHBOARD_METRICS:
+            self.assertEqual(
+                {"mean", "worst_decile", "min", "max"},
+                set(second_segment["metrics"][metric]),
+            )
+
+        first_scene = dashboard["scenes"][0]
+        self.assertEqual(2, first_scene["frame_count"])
+        self.assertAlmostEqual(87.0, first_scene["score"])
+        self.assertEqual("Very good", first_scene["band"])
+        self.assertEqual(
+            len(report["frames"]),
+            dashboard["overview"]["source_frame_count"],
+        )
+        self.assertEqual(
+            len(report["frames"]),
+            dashboard["overview"]["point_count"],
+        )
+        self.assertTrue(all(
+            metric in dashboard["overview"]["points"][0]
+            for metric in self.worker.DASHBOARD_METRICS
+        ))
+
+    def test_metric_aware_overview_is_capped_and_keeps_each_metric_outlier(self):
+        frames = []
+        outliers = {}
+        for index in range(9000):
+            frame = {
+                "frame": index,
+                "time_seconds": index / 30,
+                "scene_index": 1,
+            }
+            for metric_index, metric in enumerate(
+                self.worker.DASHBOARD_METRICS
+            ):
+                outlier = 100 + metric_index * 500
+                outliers[metric] = outlier
+                frame[metric] = (
+                    -1000.0 - metric_index
+                    if index == outlier
+                    else 50.0 + metric_index
+                )
+            frames.append(frame)
+        segments = [{
+            "index": 0,
+            "start_seconds": 0,
+            "end_seconds": 1000,
+        }]
+
+        points = self.worker.metric_aware_overview_points(frames, segments)
+        selected = {point["frame"] for point in points}
+
+        self.assertLessEqual(
+            len(points), self.worker.DASHBOARD_POINT_LIMIT
+        )
+        self.assertIn(0, selected)
+        self.assertIn(8999, selected)
+        for metric, frame in outliers.items():
+            with self.subTest(metric=metric):
+                self.assertIn(frame, selected)
+
+    def test_idle_backfill_is_cached_and_never_mutates_report_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            good = catalog_item("good", cache_key(32), 1, duration=6)
+            bad = catalog_item("bad", cache_key(33), 2, duration=6)
+            playlist = create_hls_media_cache(
+                root, good, [3, 3], media_sequence=12
+            )
+            signature = "current"
+            records = {}
+            original_states = {}
+            for item in (good, bad):
+                report = synthetic_quality_report(
+                    [90, 80, 70, 60, 50, 40], scene_split=3
+                )
+                report["gallery"] = {
+                    "video_id": item["id"],
+                    "cache_key": item["cache_key"],
+                }
+                record = quality_record(
+                    self.worker, item["cache_key"], signature
+                )
+                record["artifacts"] = create_report_artifacts(
+                    root, item["cache_key"], report
+                )
+                records[item["id"]] = record
+                original_states[item["id"]] = copy.deepcopy(
+                    record["artifacts"]
+                )
+            write_json(root / "data" / "catalog.json", {
+                "scan": {"in_progress": False},
+                "items": [good, bad],
+            })
+            write_json(root / "data" / "quality-index.json", {
+                "items": records,
+            })
+            arguments = SimpleNamespace(
+                root=str(root),
+                status=False,
+                watch=False,
+                json=False,
+                all=False,
+                command=False,
+                force=False,
+                ignore_busy=False,
+                prune_only=False,
+                items=1,
+                video_id=None,
+            )
+            configuration = {
+                "signature": signature,
+                "require_content_analysis": False,
+            }
+
+            with mock.patch.object(
+                self.worker, "parse_arguments", return_value=arguments
+            ), mock.patch.object(
+                self.worker, "settings", return_value=configuration
+            ), mock.patch.object(
+                self.worker, "run_one"
+            ) as run_one, redirect_stdout(io.StringIO()):
+                result = self.worker.main()
+
+            self.assertEqual(0, result)
+            run_one.assert_not_called()
+            dashboard_path = (
+                root / "data" / "quality" / good["cache_key"]
+                / "dashboard.json"
+            )
+            self.assertTrue(dashboard_path.is_file())
+            self.assertFalse(
+                (
+                    root / "data" / "quality" / bad["cache_key"]
+                    / "dashboard.json"
+                ).exists()
+            )
+            first_dashboard_state = dashboard_path.stat()
+            self.assertFalse(self.worker.ensure_quality_dashboard(root, good))
+            self.assertEqual(
+                first_dashboard_state.st_mtime_ns,
+                dashboard_path.stat().st_mtime_ns,
+            )
+            first_fingerprint = json.loads(
+                dashboard_path.read_text(encoding="utf-8")
+            )["fingerprint"]
+            playlist.write_text(
+                playlist.read_text(encoding="utf-8") + "\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(self.worker.ensure_quality_dashboard(root, good))
+            self.assertNotEqual(
+                first_fingerprint,
+                json.loads(
+                    dashboard_path.read_text(encoding="utf-8")
+                )["fingerprint"],
+            )
+            self.assertEqual(0o644, dashboard_path.stat().st_mode & 0o777)
+
+            saved_index = json.loads(
+                (root / "data" / "quality-index.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(2, saved_index["analyzed_count"])
+            self.assertEqual(0, saved_index["pending_count"])
+            for item in (good, bad):
+                self.assertEqual(
+                    original_states[item["id"]],
+                    saved_index["items"][item["id"]]["artifacts"],
+                )
+                self.assertNotIn(
+                    "dashboard.json",
+                    saved_index["items"][item["id"]]["artifacts"],
+                )
+                self.assertTrue(self.worker.report_artifacts_ready(
+                    root, item, saved_index["items"][item["id"]]
+                ))
+            _, _, current, _, pending, _, _ = self.worker.queue_state(
+                root, configuration
+            )
+            self.assertEqual({"bad", "good"}, set(current))
+            self.assertEqual([], pending)
+            self.assertEqual(
+                "gallery-quality-v2", self.worker.WORKER_VERSION
+            )
+            self.assertEqual(
+                ("report.json", "frames.csv", "report.html"),
+                self.worker.REPORT_ARTIFACTS,
+            )
 
     def test_existing_report_metrics_are_backfilled_without_reanalysis(self):
         with tempfile.TemporaryDirectory() as temporary:

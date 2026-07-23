@@ -150,15 +150,23 @@ def discover_videos(media_root):
     return sorted(videos, key=lambda value: str(value).casefold())
 
 
-def find_ffmpeg(root):
+def is_encoding_ffmpeg(arguments, root):
     media_prefix = str(root / "media") + os.sep
     cache_prefix = str(root / "cache") + os.sep
+    joined = "\0".join(arguments)
+    building_prefix = cache_prefix + ".building-"
+    writes_encoding_cache = any(
+        argument.startswith(building_prefix) for argument in arguments
+    )
+    return media_prefix in joined and cache_prefix in joined and writes_encoding_cache
+
+
+def find_ffmpeg(root):
     for proc_dir in Path("/proc").glob("[0-9]*"):
         arguments = read_cmdline(proc_dir.name)
         if not arguments or os.path.basename(arguments[0]) != "ffmpeg":
             continue
-        joined = "\0".join(arguments)
-        if media_prefix in joined and cache_prefix in joined and ".building-" in joined:
+        if is_encoding_ffmpeg(arguments, root):
             return int(proc_dir.name), arguments
     return 0, []
 

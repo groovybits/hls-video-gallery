@@ -2,6 +2,19 @@
 
 All notable changes are documented here.
 
+## 1.3.0 — 2026-07-23
+
+- Added an optional, low-priority post-encode objective-quality queue.
+- Added a standalone C++17 analyzer with Standard VMAF, Phone VMAF, SSIM, PSNR,
+  and perceptual-hash measurements from one paired FFmpeg pass.
+- Added frame-level CSV/JSON output, scene-aware scoring, a standalone visual
+  report, live command-line and browser progress, and per-video quality views.
+- Added source- and settings-aware report caching, safe stale-report cleanup,
+  failure cooldowns, and shared locks that avoid competing with encoding or
+  optional visual categorization.
+- Added installation, configuration, operations, security, and validation
+  support for the quality-analysis feature.
+
 ## 1.2.1 — 2026-07-23
 
 - Fixed macOS SSH and SCP startup failures caused by placing `ControlPath` under

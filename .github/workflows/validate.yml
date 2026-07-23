@@ -16,6 +16,6 @@ jobs:
         with:
           node-version: "22"
       - name: Install validation tools
-        run: sudo apt-get update && sudo apt-get install -y php-cli
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg php-cli
       - name: Validate
         run: make validate

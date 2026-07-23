@@ -14,8 +14,9 @@ import sys
 from urllib.parse import urlparse
 
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 PIPELINE_VERSION = 6
+CONTENT_ANALYZER_BASE_VERSION = "mobileclip2-s0-configurable-v1"
 PRESETS = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -188,6 +189,13 @@ def load_taxonomy(path):
     return validated
 
 
+def content_analyzer_version(tags):
+    canonical = json.dumps(
+        tags, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return CONTENT_ANALYZER_BASE_VERSION + "-" + hashlib.sha256(canonical).hexdigest()[:12]
+
+
 def validate(repo_root, config_path, config):
     if get(config, "schema_version") != 1:
         raise ConfigError("gallery.json schema_version must be 1")
@@ -274,6 +282,7 @@ def validate(repo_root, config_path, config):
         "unmuted": bool_value(config, "gallery.unmuted", True),
         "show_encoder_status": bool_value(config, "gallery.show_encoder_status", True),
         "show_content_analysis": bool_value(config, "gallery.show_content_analysis", False),
+        "show_quality_analysis": bool_value(config, "gallery.show_quality_analysis", False),
     }
     title_words = get(config, "gallery.title_words", {})
     if not isinstance(title_words, dict) or not all(
@@ -297,6 +306,20 @@ def validate(repo_root, config_path, config):
         "threads": int_value(config, "content_analysis.threads", 1, 1, 64),
         "taxonomy_path": taxonomy_path,
         "tags": taxonomy,
+        "analyzer_version": content_analyzer_version(taxonomy),
+    }
+    quality_analysis = {
+        "enabled": bool_value(config, "quality_analysis.enabled", False),
+        "items_per_run": int_value(config, "quality_analysis.items_per_run", 1, 1, 20),
+        "interval_seconds": int_value(config, "quality_analysis.interval_seconds", 300, 30, 86400),
+        "max_load": float_value(config, "quality_analysis.max_load", 1.5, 0.1, 100.0),
+        "threads": int_value(config, "quality_analysis.threads", 2, 1, 2),
+        "frame_rate": int_value(config, "quality_analysis.frame_rate", 30, 1, 120),
+        "scene_threshold": float_value(config, "quality_analysis.scene_threshold", 10.0, 0.1, 100.0),
+        "min_scene_seconds": float_value(config, "quality_analysis.min_scene_seconds", 2.0, 0.1, 120.0),
+        "failure_retry_seconds": int_value(
+            config, "quality_analysis.failure_retry_seconds", 3600, 60, 604800,
+        ),
     }
 
     profile_path = resolve_input_path(
@@ -337,6 +360,7 @@ def validate(repo_root, config_path, config):
         "gallery": gallery,
         "encoding": encoding,
         "content_analysis": content_analysis,
+        "quality_analysis": quality_analysis,
         "cdn_provider": cdn_provider,
         "cdn_config": cdn_config,
         "profile_path": profile_path,
@@ -395,6 +419,7 @@ def render(repo_root, config_path, output_dir):
             "share_links": values["public_share_links"],
             "encoder_status": values["gallery"]["show_encoder_status"],
             "content_analysis": values["gallery"]["show_content_analysis"],
+            "quality_analysis": values["gallery"]["show_quality_analysis"],
             "autoplay": values["gallery"]["autoplay"],
             "unmuted": values["gallery"]["unmuted"],
         },
@@ -535,6 +560,16 @@ def render(repo_root, config_path, output_dir):
                 "ANALYZER_INTERVAL": values["content_analysis"]["interval_seconds"],
                 "ANALYZER_MAX_LOAD": values["content_analysis"]["max_load"],
                 "ANALYZER_THREADS": values["content_analysis"]["threads"],
+                "QUALITY_ITEMS": values["quality_analysis"]["items_per_run"],
+                "QUALITY_INTERVAL": values["quality_analysis"]["interval_seconds"],
+                "QUALITY_MAX_LOAD": values["quality_analysis"]["max_load"],
+                "QUALITY_THREADS": values["quality_analysis"]["threads"],
+                "QUALITY_FRAME_RATE": values["quality_analysis"]["frame_rate"],
+                "QUALITY_SCENE_THRESHOLD": values["quality_analysis"]["scene_threshold"],
+                "QUALITY_MIN_SCENE_SECONDS": values["quality_analysis"]["min_scene_seconds"],
+                "QUALITY_FAILURE_RETRY_SECONDS": values["quality_analysis"]["failure_retry_seconds"],
+                "QUALITY_REQUIRE_CONTENT": "true" if values["content_analysis"]["enabled"] else "false",
+                "QUALITY_EXPECTED_CONTENT_VERSION": values["content_analysis"]["analyzer_version"],
                 "VIDEO_MAX_HEIGHT": values["encoding"]["max_height"],
                 "VIDEO_PRESET": values["encoding"]["preset"],
                 "VIDEO_BITRATE": values["encoding"]["video_bitrate"],
@@ -560,6 +595,7 @@ def render(repo_root, config_path, output_dir):
         "cdn_provider": values["cdn_provider"],
         "cdn_config": str(values["cdn_config"]) if values["cdn_config"] else "",
         "content_analysis_enabled": values["content_analysis"]["enabled"],
+        "quality_analysis_enabled": values["quality_analysis"]["enabled"],
         "encoding": values["encoding"],
         "encoding_sha256": hashlib.sha256(json.dumps(
             values["encoding"], sort_keys=True, separators=(",", ":"),

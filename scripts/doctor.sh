@@ -46,6 +46,20 @@ render_dir="$(mktemp -d "${TMPDIR:-/tmp}/hls-gallery-doctor.XXXXXX")"
 trap 'rm -rf -- "$render_dir"' EXIT
 if python3 "$script_dir/configure.py" --config "$config_path" --output "$render_dir" >/dev/null; then
     echo "OK   gallery configuration"
+    quality_enabled="$(python3 "$script_dir/json-value.py" "$render_dir/install.json" quality_analysis_enabled)"
+    if [[ "$quality_enabled" == "true" ]]; then
+        check_command make
+        check_command c++
+        quality_filters="$(ffmpeg -hide_banner -filters 2>/dev/null)"
+        for filter in libvmaf scdet colorspace zscale tonemap; do
+            if grep -Eq "[[:space:]]${filter}[[:space:]]" <<<"$quality_filters"; then
+                echo "OK   FFmpeg $filter quality filter"
+            else
+                echo "MISS FFmpeg $filter quality filter"
+                failed=1
+            fi
+        done
+    fi
 else
     echo "FAIL gallery configuration"
     failed=1

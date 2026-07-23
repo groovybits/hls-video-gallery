@@ -70,6 +70,7 @@ web root. Remove it after installation if you prefer, then manage users with
 | `unmuted` | Requests sound by default. Browser autoplay rules commonly block sound until a user gesture. |
 | `show_encoder_status` | Displays the live FFmpeg/queue panel to authenticated viewers. |
 | `show_content_analysis` | Displays visual-analysis status and filters. |
+| `show_quality_analysis` | Displays objective quality status and cached reports to authenticated viewers. |
 | `title_words` | Lowercase filename words that need exact capitalization. |
 
 ## `encoding`
@@ -106,6 +107,40 @@ Every taxonomy tag needs:
 
 Filename patterns power instant filename hints whether or not the optional model
 is installed.
+
+## `quality_analysis`
+
+Objective quality analysis compares each completed HLS rendition with its source
+using VMAF, SSIM, PSNR, and perceptual hashes. It is independent of
+`gallery.show_quality_analysis`: `enabled` controls background work, while the
+gallery flag controls authenticated display.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `enabled` | `false` | Builds the C++ analyzer and enables the instance's quality timer. |
+| `items_per_run` | `1` | Maximum videos measured serially during one timer activation, 1–20. |
+| `interval_seconds` | `300` | Delay between completed timer activations, 30–86400 seconds. |
+| `max_load` | `1.5` | One-minute load ceiling; the worker waits above it. |
+| `threads` | `2` | Analyzer processing threads, restricted to 1–2. |
+| `frame_rate` | `30` | Aligned comparison frames per second, 1–120. The standard scoring baseline is 30. |
+| `scene_threshold` | `10` | FFmpeg source-scene change threshold, 0.1–100. |
+| `min_scene_seconds` | `2` | Shorter detected fragments are merged with an adjacent scene. |
+| `failure_retry_seconds` | `3600` | Cooldown before retrying one failed source/cache version. |
+
+When `content_analysis.enabled` is true, the rendered quality service waits for a
+current content-analysis record for each video. The installer also pins the
+expected analyzer/taxonomy version into the quality service, so a self-consistent
+but stale category index cannot unlock measurements after an upgrade. Both
+optional stages remain separate; quality analysis begins only after that
+prerequisite and encoding are complete.
+
+Changing `frame_rate`, `scene_threshold`, or `min_scene_seconds` changes the
+measurement signature and queues fresh reports. Scheduling, load, retry,
+thread-count, and prerequisite-policy changes reuse valid metric results. None
+of these settings rebuilds HLS media. The service is capped at two CPU cores
+even if the host has more processors. See
+[Objective quality analysis](QUALITY_ANALYSIS.md) for the exact scoring formula,
+HDR normalization, standalone CLI, and outputs.
 
 ## `cdn`
 

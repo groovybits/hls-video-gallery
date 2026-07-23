@@ -1,9 +1,14 @@
 Options -Indexes
 
+RewriteEngine On
+# Quality reports are version-keyed and expose only the three generated,
+# read-only artifacts expected by the authenticated gallery.
+RewriteRule ^(?!quality/[0-9a-f]{18}--[0-9a-f]{14}/(?:report\.json|frames\.csv|report\.html)$)(?:.*/)?(?:report\.json|frames\.csv|report\.html)$ - [F,L,NC]
+
 <IfModule mod_headers.c>
   Header always set Cache-Control "private, no-store, max-age=0"
 </IfModule>
 
-<FilesMatch "^(?!(catalog|encode-progress|content-index|content-analysis-progress|bunny-sync-status)\.json$|encode-preview\.jpg$).+">
+<FilesMatch "^(?!(catalog|encode-progress|content-index|content-analysis-progress|quality-analysis-progress|bunny-sync-status)\.json$|encode-preview\.jpg$|report\.json$|frames\.csv$|report\.html$).+">
   Require all denied
 </FilesMatch>

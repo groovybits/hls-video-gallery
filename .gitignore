@@ -27,3 +27,7 @@ __pycache__/
 *.py[cod]
 *.log
 *.tmp
+
+# Local standalone quality-analyzer builds
+/tools/quality-analyzer/hls-quality-analyzer
+/tools/quality-analyzer/build/

@@ -11,8 +11,10 @@
   var shareLinkCache = {};
   var encodeProgress = null;
   var categoryProgress = null;
+  var qualityProgress = null;
   var telemetryTimer = null;
   var categoryTimer = null;
+  var qualityTimer = null;
   var catalogTimer = null;
   var contentIndexTimer = null;
   var CONFIG = window.HLS_GALLERY_CONFIG || {};
@@ -47,6 +49,14 @@
     copiedUntil: 0
   };
   var categoryUiState = { queueOpen: false, queueScrollTop: 0 };
+  var qualityUiState = {
+    queueOpen: false,
+    queueScrollTop: 0,
+    commandOpen: false,
+    commandScrollTop: 0,
+    detailsOpen: false,
+    copiedUntil: 0
+  };
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -473,6 +483,7 @@
       window.scrollTo({ top: 0, behavior: "smooth" });
       if (FEATURES.encoder_status) loadEncodingProgress();
       if (FEATURES.content_analysis) loadCategoryProgress();
+      if (FEATURES.quality_analysis !== false) loadQualityProgress();
     }
   }
 
@@ -941,6 +952,300 @@
       });
   }
 
+  function qualityMonitorVisible() {
+    if (!qualityProgress || qualityProgress.enabled === false) return false;
+    return String(qualityProgress.state || "").toLowerCase() !== "disabled";
+  }
+
+  function buildQualityMonitor() {
+    if (!qualityMonitorVisible()) return null;
+
+    var progress = qualityProgress;
+    var state = String(progress.state || (progress.active ? "analyzing" : "waiting")).toLowerCase();
+    var active = Boolean(progress.active) || state === "analyzing" || state === "running" || state === "processing";
+    var complete = state === "complete" || state === "idle" && Number(progress.pending_count || 0) === 0;
+    var failed = state === "error" || state === "failed";
+    var current = progress.current || {};
+    var engine = progress.engine || progress;
+    var catalogCount = Number(progress.catalog_count || 0);
+    var analyzedCount = Number(progress.analyzed_count || 0);
+    var pendingCount = Number(progress.pending_count || 0);
+    var overallPercent = Number(progress.percent);
+    if (!Number.isFinite(overallPercent)) {
+      overallPercent = catalogCount ? 100 * analyzedCount / catalogCount : (complete ? 100 : 0);
+    }
+    var enginePercent = Number(engine.percent);
+    if (!Number.isFinite(enginePercent)) enginePercent = 0;
+    var frameTotal = Number(engine.frames_total || engine.total_frames || 0);
+    var frameDone = Number(engine.frames_done || 0);
+    var framePercent = frameTotal ? 100 * frameDone / frameTotal : 0;
+    var currentTitle = current.title || current.source_relative || progress.source || "";
+
+    var section = el("section", "encoding-monitor quality-monitor library-monitor");
+    section.id = "quality-monitor";
+    section.setAttribute("aria-label", "Streaming quality analysis status");
+    section.classList.toggle("is-idle", !active);
+    section.classList.toggle("is-complete", complete);
+    section.classList.toggle("is-error", failed);
+
+    var top = el("div", "monitor-top");
+    var heading = el("div", "monitor-heading");
+    var badgeRow = el("div", "monitor-badge-row");
+    var badgeText = active ? "Live quality analysis" : (complete ? "Quality analysis complete" : (failed ? "Quality analyzer needs attention" : "Quality queue"));
+    badgeRow.appendChild(el("span", "monitor-badge " + (active ? "is-active" : "is-idle"), badgeText));
+    if (engine.phase || progress.phase) {
+      badgeRow.appendChild(el("span", "monitor-pass-badge", engine.phase || progress.phase));
+    }
+    append(
+      heading,
+      badgeRow,
+      el("h2", "", progress.phase_label || (active ? "Measuring encoded video quality" : "Perceptual quality analysis")),
+      el("p", "monitor-source", currentTitle ? prettyVideoTitle(currentTitle) : (
+        progress.note || progress.reason || (
+          toNumber(progress.pending_count, 0) > 0
+            ? "The next queued video will start when the timer runs and resources are free."
+            : "Waiting for an encoded video to analyze."
+        )
+      ))
+    );
+    var count = el("div", "monitor-queue quality-count");
+    var queueTotal = Number(progress.queue_total || 0);
+    var queuePosition = Number(progress.queue_position || 0);
+    append(
+      count,
+      el("strong", "", active && queueTotal ? queuePosition + " / " + queueTotal : analyzedCount + " / " + catalogCount),
+      el("span", "", active && queueTotal ? "current quality queue" : "quality reports ready"),
+      el("small", "", active && queueTotal
+        ? analyzedCount + " reports ready · " + Math.max(0, queueTotal - queuePosition) + " after this"
+        : pendingCount + " pending · " + Number(progress.waiting_content_count || 0) + " waiting on content")
+    );
+    append(top, heading, count);
+    section.appendChild(top);
+
+    var metrics = el("div", "monitor-metrics quality-live-metrics");
+    [
+      [formatNumber(engine.fps, 1), "analysis fps"],
+      [formatNumber(engine.speed, 2) + "×", "real-time speed"],
+      [formatPercent(enginePercent), "current metric"],
+      [active ? formatDuration(engine.eta_seconds || progress.eta_seconds) : (complete ? "Complete" : "Waiting"), "estimated remaining"]
+    ].forEach(function (metric) {
+      var card = el("div", "monitor-metric");
+      append(card, el("strong", "", metric[0]), el("span", "", metric[1]));
+      metrics.appendChild(card);
+    });
+    section.appendChild(metrics);
+
+    var overallWrap = el("div", "monitor-progress-wrap");
+    var overallLabels = el("div", "monitor-progress-labels");
+    append(
+      overallLabels,
+      el("span", "", analyzedCount + " analyzed of " + catalogCount + " videos"),
+      el("span", "", formatPercent(overallPercent) + " of the library")
+    );
+    var overallTrack = el("div", "monitor-progress quality-progress");
+    overallTrack.setAttribute("role", "progressbar");
+    overallTrack.setAttribute("aria-label", "Library quality analysis progress");
+    overallTrack.setAttribute("aria-valuemin", "0");
+    overallTrack.setAttribute("aria-valuemax", "100");
+    overallTrack.setAttribute("aria-valuenow", String(overallPercent));
+    var overallFill = el("span");
+    overallFill.style.width = formatPercent(overallPercent);
+    overallTrack.appendChild(overallFill);
+    append(overallWrap, overallLabels, overallTrack);
+    section.appendChild(overallWrap);
+
+    if (active) {
+      var metricWrap = el("div", "monitor-progress-wrap quality-current-progress");
+      var metricLabels = el("div", "monitor-progress-labels");
+      var processedText = Number(engine.duration_seconds || 0) > 0
+        ? formatDuration(engine.processed_seconds) + " / " + formatDuration(engine.duration_seconds)
+        : formatPercent(enginePercent);
+      append(
+        metricLabels,
+        el("span", "", "Current metric · " + (engine.phase || progress.phase || "measuring")),
+        el("span", "", processedText)
+      );
+      var metricTrack = el("div", "monitor-progress is-overall");
+      metricTrack.setAttribute("role", "progressbar");
+      metricTrack.setAttribute("aria-label", "Current quality metric progress");
+      metricTrack.setAttribute("aria-valuemin", "0");
+      metricTrack.setAttribute("aria-valuemax", "100");
+      metricTrack.setAttribute("aria-valuenow", String(enginePercent));
+      var metricFill = el("span");
+      metricFill.style.width = formatPercent(enginePercent);
+      metricTrack.appendChild(metricFill);
+      append(metricWrap, metricLabels, metricTrack);
+      section.appendChild(metricWrap);
+
+      if (frameTotal || Number(engine.scenes_detected || 0)) {
+        var sceneWrap = el("div", "monitor-progress-wrap quality-scene-progress");
+        var sceneLabels = el("div", "monitor-progress-labels");
+        append(
+          sceneLabels,
+          el("span", "", frameTotal ? frameDone + " of " + frameTotal + " metric frames" : "Scene detection"),
+          el("span", "", Number(engine.scenes_detected || 0) + " scenes detected")
+        );
+        var sceneTrack = el("div", "monitor-progress is-overall");
+        sceneTrack.setAttribute("role", "progressbar");
+        sceneTrack.setAttribute("aria-label", "Quality frame and scene progress");
+        sceneTrack.setAttribute("aria-valuemin", "0");
+        sceneTrack.setAttribute("aria-valuemax", "100");
+        sceneTrack.setAttribute("aria-valuenow", String(framePercent));
+        var sceneFill = el("span");
+        sceneFill.style.width = formatPercent(framePercent);
+        sceneTrack.appendChild(sceneFill);
+        append(sceneWrap, sceneLabels, sceneTrack);
+        section.appendChild(sceneWrap);
+      }
+    }
+
+    var lower = el("div", "quality-monitor-lower");
+    var facts = el("div", "category-facts quality-facts");
+    [
+      [formatNumber(progress.average_seconds_per_video, 1) + " sec", "average per video"],
+      [formatDuration(progress.elapsed_seconds), "current run elapsed"],
+      [complete ? "Complete" : formatFinishTime(progress.estimated_finish_at), "estimated finish"],
+      [Number(engine.scenes_detected || 0), "current scenes"]
+    ].forEach(function (metric) {
+      var card = el("div", "monitor-time-card");
+      append(card, el("strong", "", metric[0]), el("span", "", metric[1]));
+      facts.appendChild(card);
+    });
+    lower.appendChild(facts);
+
+    var upcoming = Array.isArray(progress.upcoming) ? progress.upcoming : [];
+    var queueSection = el("div", "monitor-upcoming quality-upcoming");
+    queueSection.appendChild(el("h3", "", upcoming.length ? "Up next" : "Quality queue"));
+    if (upcoming.length) {
+      var drawer = el("details", "queue-drawer");
+      drawer.open = qualityUiState.queueOpen;
+      var queueSummary = el("summary", "", drawer.open ? "Hide quality queue" : "Browse all " + upcoming.length + " pending videos");
+      var queueList = el("ol", "queue-full-list");
+      queueList.start = active && queuePosition ? queuePosition + 1 : 1;
+      upcoming.forEach(function (name) {
+        var queueItem = el("li");
+        queueItem.title = name;
+        queueItem.appendChild(el("span", "", prettyVideoTitle(name)));
+        queueList.appendChild(queueItem);
+      });
+      queueList.scrollTop = qualityUiState.queueScrollTop;
+      queueList.addEventListener("scroll", function () { qualityUiState.queueScrollTop = queueList.scrollTop; }, { passive: true });
+      drawer.addEventListener("toggle", function () {
+        qualityUiState.queueOpen = drawer.open;
+        queueSummary.textContent = drawer.open ? "Hide quality queue" : "Browse all " + upcoming.length + " pending videos";
+      });
+      append(drawer, queueSummary, queueList);
+      queueSection.appendChild(drawer);
+    } else {
+      queueSection.appendChild(el("p", "monitor-none", complete ? "The quality queue is empty." : "The next quality job is being prepared."));
+    }
+    lower.appendChild(queueSection);
+    section.appendChild(lower);
+
+    var detailBar = el("div", "quality-monitor-details");
+    var runDetails = el("details", "monitor-command quality-run-details");
+    runDetails.open = qualityUiState.detailsOpen;
+    var runSummary = el("summary", "", runDetails.open ? "Hide run details" : "Show run details");
+    runDetails.addEventListener("toggle", function () {
+      qualityUiState.detailsOpen = runDetails.open;
+      runSummary.textContent = runDetails.open ? "Hide run details" : "Show run details";
+    });
+    var detailList = el("dl", "monitor-parameter-list quality-detail-list");
+    [
+      ["State", progress.state || "Unknown"],
+      ["Phase", engine.phase || progress.phase || "Waiting"],
+      ["Run started", formatDate(progress.run_started_at, true)],
+      ["Item started", formatDate(progress.item_started_at, true)],
+      ["Video ID", current.video_id || "—"],
+      ["Cache key", current.cache_key || "—"]
+    ].forEach(function (pair) { append(detailList, el("dt", "", pair[0]), el("dd", "", pair[1])); });
+    append(runDetails, runSummary, detailList);
+    detailBar.appendChild(runDetails);
+
+    var analysisCommand = engine.command || engine.ffmpeg_command || (Array.isArray(engine.ffmpeg_args) ? engine.ffmpeg_args.join(" ") : "");
+    if (analysisCommand) {
+      var commandDetails = el("details", "monitor-command quality-command");
+      commandDetails.open = qualityUiState.commandOpen;
+      var commandSummary = el("summary", "", commandDetails.open ? "Hide analysis command" : "Show analysis command");
+      var commandPre = el("pre");
+      commandPre.appendChild(el("code", "", analysisCommand));
+      commandPre.scrollTop = qualityUiState.commandScrollTop;
+      commandPre.addEventListener("scroll", function () { qualityUiState.commandScrollTop = commandPre.scrollTop; }, { passive: true });
+      commandDetails.addEventListener("toggle", function () {
+        qualityUiState.commandOpen = commandDetails.open;
+        commandSummary.textContent = commandDetails.open ? "Hide analysis command" : "Show analysis command";
+      });
+      append(commandDetails, commandSummary, commandPre);
+      var copyButton = el("button", "copy-command", Date.now() < qualityUiState.copiedUntil ? "Copied ✓" : "Copy analysis command");
+      copyButton.type = "button";
+      copyButton.addEventListener("click", function () {
+        copyButton.disabled = true;
+        copyText(analysisCommand).then(function () {
+          qualityUiState.copiedUntil = Date.now() + 2500;
+          copyButton.textContent = "Copied ✓";
+          window.setTimeout(function () {
+            if (copyButton.isConnected) {
+              copyButton.textContent = "Copy analysis command";
+              copyButton.disabled = false;
+            }
+          }, 2500);
+        }).catch(function () {
+          qualityUiState.commandOpen = true;
+          commandDetails.open = true;
+          copyButton.textContent = "Select the command to copy";
+          copyButton.disabled = false;
+        });
+      });
+      append(detailBar, commandDetails, copyButton);
+    }
+    section.appendChild(detailBar);
+    if (failed && progress.error) section.appendChild(el("p", "category-error", progress.error));
+    section.appendChild(el("p", "monitor-note", "Quality reports compare the encoded rendition with its source. Completed reports remain cached until that source version changes."));
+    return section;
+  }
+
+  function refreshQualityMonitor() {
+    if (currentVideoId()) return;
+    var existing = document.getElementById("quality-monitor");
+    var replacement = buildQualityMonitor();
+    if (!replacement) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) {
+      var oldQueue = existing.querySelector(".queue-full-list");
+      var oldCommand = existing.querySelector(".quality-command pre");
+      if (oldQueue) qualityUiState.queueScrollTop = oldQueue.scrollTop;
+      if (oldCommand) qualityUiState.commandScrollTop = oldCommand.scrollTop;
+      existing.replaceWith(replacement);
+    } else if (catalog) {
+      var anchor = document.getElementById("category-monitor") || document.getElementById("encode-monitor");
+      if (anchor) anchor.insertAdjacentElement("afterend", replacement);
+      else app.appendChild(replacement);
+    }
+    var newQueue = replacement.querySelector(".queue-full-list");
+    var newCommand = replacement.querySelector(".quality-command pre");
+    if (newQueue) newQueue.scrollTop = qualityUiState.queueScrollTop;
+    if (newCommand) newCommand.scrollTop = qualityUiState.commandScrollTop;
+  }
+
+  function loadQualityProgress() {
+    if (currentVideoId()) return;
+    fetch("data/quality-analysis-progress.json?_=" + Date.now(), { cache: "no-store", credentials: "same-origin" })
+      .then(function (response) {
+        if (!response.ok) throw new Error("Quality telemetry request returned " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        qualityProgress = data;
+        refreshQualityMonitor();
+      })
+      .catch(function () {
+        qualityProgress = null;
+        refreshQualityMonitor();
+      });
+  }
+
   function loadEncodingProgress() {
     if (currentVideoId()) return;
     fetch("data/encode-progress.json?_=" + Date.now(), { cache: "no-store", credentials: "same-origin" })
@@ -1267,6 +1572,7 @@
       app.appendChild(empty);
       if (FEATURES.encoder_status) app.appendChild(buildEncodingMonitor());
       if (FEATURES.content_analysis) app.appendChild(buildCategoryMonitor());
+      if (qualityMonitorVisible()) app.appendChild(buildQualityMonitor());
       return;
     }
 
@@ -1469,6 +1775,7 @@
     renderGrid(grid, note, paginations, shuffleButton);
     if (FEATURES.encoder_status) app.appendChild(buildEncodingMonitor());
     if (FEATURES.content_analysis) app.appendChild(buildCategoryMonitor());
+    if (qualityMonitorVisible()) app.appendChild(buildQualityMonitor());
   }
 
   function addStat(list, label, value) {
@@ -1541,6 +1848,459 @@
     append(grid, analysisCard, filenameCard);
     section.appendChild(grid);
     return section;
+  }
+
+  function qualityMetricValue(value) {
+    if (value === null || value === undefined || value === "") return null;
+    if (value && typeof value === "object") {
+      var keys = ["mean", "average", "score", "weighted_mean", "value", "p50", "median"];
+      for (var index = 0; index < keys.length; index += 1) {
+        var raw = value[keys[index]];
+        if (raw === null || raw === undefined || raw === "") continue;
+        var nested = Number(raw);
+        if (Number.isFinite(nested)) return nested;
+      }
+      return null;
+    }
+    var numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  function qualityMetricObject(report, aliases) {
+    var sources = [
+      report && report.metrics,
+      report && report.summary && report.summary.metrics,
+      report && report.overall && report.overall.metrics,
+      report
+    ];
+    for (var sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
+      var source = sources[sourceIndex];
+      if (!source || typeof source !== "object") continue;
+      for (var aliasIndex = 0; aliasIndex < aliases.length; aliasIndex += 1) {
+        if (Object.prototype.hasOwnProperty.call(source, aliases[aliasIndex])) return source[aliases[aliasIndex]];
+      }
+    }
+    return null;
+  }
+
+  function qualityPointMetric(point, aliases) {
+    if (!point || typeof point !== "object") return null;
+    var sources = [point.metrics, point];
+    for (var sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
+      var source = sources[sourceIndex];
+      if (!source || typeof source !== "object") continue;
+      for (var aliasIndex = 0; aliasIndex < aliases.length; aliasIndex += 1) {
+        if (Object.prototype.hasOwnProperty.call(source, aliases[aliasIndex])) {
+          return qualityMetricValue(source[aliases[aliasIndex]]);
+        }
+      }
+    }
+    return null;
+  }
+
+  function qualityPointTime(point, fallback) {
+    var keys = ["time_seconds", "timestamp_seconds", "timestamp", "time", "pts_time", "start_seconds", "start"];
+    for (var index = 0; index < keys.length; index += 1) {
+      var value = Number(point && point[keys[index]]);
+      if (Number.isFinite(value)) return Math.max(0, value);
+    }
+    return Math.max(0, Number(fallback) || 0);
+  }
+
+  function metricDisplay(value, decimals, suffix) {
+    var numeric = qualityMetricValue(value);
+    return numeric === null ? "—" : numeric.toFixed(decimals) + (suffix || "");
+  }
+
+  function metricDetail(value, decimals, suffix) {
+    if (!value || typeof value !== "object") return "";
+    var bits = [];
+    [["p5", "P5"], ["p10", "P10"], ["worst_decile", "Worst decile"], ["min", "Minimum"], ["minimum", "Minimum"]].forEach(function (pair) {
+      var raw = value[pair[0]];
+      if (raw === null || raw === undefined || raw === "") return;
+      var number = Number(raw);
+      if (Number.isFinite(number)) {
+        if (bits.length < 2) bits.push(pair[1] + " " + number.toFixed(decimals) + (suffix || ""));
+      }
+    });
+    return bits.join(" · ");
+  }
+
+  function reportTimeline(report) {
+    var values = report.timeline || report.samples || report.frames || report.quality_over_time || [];
+    if (values && !Array.isArray(values)) values = values.samples || values.frames || values.points || [];
+    if (!Array.isArray(values)) return [];
+    return values.map(function (point, index) {
+      return {
+        source: point,
+        time: qualityPointTime(point, index),
+        composite: qualityPointMetric(point, ["composite", "score", "overall_score"]),
+        vmaf: qualityPointMetric(point, ["vmaf", "vmaf_standard", "standard_vmaf", "libvmaf"]),
+        phone: qualityPointMetric(point, ["vmaf_phone", "phone_vmaf", "vmaf_mobile"]),
+        ssim: qualityPointMetric(point, ["ssim", "ssim_y"]),
+        psnr: qualityPointMetric(point, ["psnr", "psnr_y"]),
+        phash: qualityPointMetric(point, ["phash", "phash_similarity"]),
+        temporalPhash: qualityPointMetric(point, ["temporal_phash", "temporal_consistency"])
+      };
+    }).filter(function (point) {
+      return point.composite !== null || point.vmaf !== null;
+    }).map(function (point) {
+      if (point.composite === null) point.composite = point.vmaf;
+      return point;
+    }).sort(function (a, b) { return a.time - b.time; });
+  }
+
+  function downsampleQualityPoints(points, limit) {
+    if (points.length <= limit) return points;
+    var result = [points[0]];
+    var bucketCount = limit - 2;
+    for (var bucket = 0; bucket < bucketCount; bucket += 1) {
+      var start = 1 + Math.floor(bucket * (points.length - 2) / bucketCount);
+      var end = 1 + Math.floor((bucket + 1) * (points.length - 2) / bucketCount);
+      var selected = points[start];
+      for (var index = start + 1; index < Math.max(start + 1, end); index += 1) {
+        if (points[index] && points[index].composite < selected.composite) selected = points[index];
+      }
+      if (selected) result.push(selected);
+    }
+    result.push(points[points.length - 1]);
+    return result;
+  }
+
+  function seekVideo(video, seconds) {
+    var seek = function () {
+      video.currentTime = Math.min(Math.max(0, Number(seconds) || 0), Math.max(0, (video.duration || Number(seconds) + 1) - .1));
+      video.focus({ preventScroll: true });
+      var playback = video.play();
+      if (playback && typeof playback.catch === "function") playback.catch(function () {});
+    };
+    if (video.readyState >= 1) seek();
+    else video.addEventListener("loadedmetadata", seek, { once: true });
+    video.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function svgNode(tag, attributes) {
+    var node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.keys(attributes || {}).forEach(function (name) { node.setAttribute(name, String(attributes[name])); });
+    return node;
+  }
+
+  function buildQualityTimeline(report, video) {
+    var allPoints = reportTimeline(report);
+    if (allPoints.length < 2) return null;
+    var points = downsampleQualityPoints(allPoints, 500);
+    var section = el("div", "quality-timeline-wrap");
+    var legend = el("div", "quality-chart-legend");
+    append(
+      legend,
+      el("span", "quality-legend-composite", "Overall score"),
+      el("span", "quality-legend-standard", "Standard VMAF"),
+      points.some(function (point) { return point.phone !== null; }) ? el("span", "quality-legend-phone", "Phone VMAF · informational") : null
+    );
+    section.appendChild(legend);
+
+    var chart = el("div", "quality-chart");
+    chart.tabIndex = 0;
+    chart.setAttribute("role", "group");
+    chart.setAttribute("aria-label", "Quality over time. Use left and right arrows to inspect points and Enter to play from the selected time.");
+    var svg = svgNode("svg", { viewBox: "0 0 1000 260", preserveAspectRatio: "none", "aria-hidden": "true" });
+    var plotTop = 18;
+    var plotBottom = 224;
+    var plotLeft = 12;
+    var plotRight = 988;
+    [0, 25, 50, 75, 100].forEach(function (score) {
+      var y = plotBottom - (score / 100) * (plotBottom - plotTop);
+      svg.appendChild(svgNode("line", { x1: plotLeft, y1: y, x2: plotRight, y2: y, class: "quality-grid-line" }));
+    });
+    var maximumTime = Math.max(1, points[points.length - 1].time);
+    function xFor(point) { return plotLeft + point.time / maximumTime * (plotRight - plotLeft); }
+    function yFor(value) { return plotBottom - Math.max(0, Math.min(100, Number(value) || 0)) / 100 * (plotBottom - plotTop); }
+    var compositeLine = svgNode("polyline", {
+      points: points.map(function (point) { return xFor(point).toFixed(2) + "," + yFor(point.composite).toFixed(2); }).join(" "),
+      class: "quality-line quality-line-composite"
+    });
+    svg.appendChild(compositeLine);
+    var standardPoints = points.filter(function (point) { return point.vmaf !== null; });
+    if (standardPoints.length > 1) {
+      svg.appendChild(svgNode("polyline", {
+        points: standardPoints.map(function (point) { return xFor(point).toFixed(2) + "," + yFor(point.vmaf).toFixed(2); }).join(" "),
+        class: "quality-line quality-line-standard"
+      }));
+    }
+    var phonePoints = points.filter(function (point) { return point.phone !== null; });
+    if (phonePoints.length > 1) {
+      svg.appendChild(svgNode("polyline", {
+        points: phonePoints.map(function (point) { return xFor(point).toFixed(2) + "," + yFor(point.phone).toFixed(2); }).join(" "),
+        class: "quality-line quality-line-phone"
+      }));
+    }
+    var cursor = svgNode("line", { x1: plotLeft, y1: plotTop, x2: plotLeft, y2: plotBottom, class: "quality-chart-cursor" });
+    var marker = svgNode("circle", { cx: plotLeft, cy: yFor(points[0].composite), r: 6, class: "quality-chart-marker" });
+    append(svg, cursor, marker);
+    chart.appendChild(svg);
+    var readout = el("div", "quality-chart-readout");
+    chart.appendChild(readout);
+    section.appendChild(chart);
+    var axis = el("div", "quality-chart-axis");
+    append(axis, el("span", "", "0:00"), el("span", "", formatDuration(maximumTime)));
+    section.appendChild(axis);
+
+    var selectedIndex = 0;
+    function updateSelection(index) {
+      selectedIndex = Math.max(0, Math.min(points.length - 1, index));
+      var point = points[selectedIndex];
+      var x = xFor(point);
+      cursor.setAttribute("x1", x);
+      cursor.setAttribute("x2", x);
+      marker.setAttribute("cx", x);
+      marker.setAttribute("cy", yFor(point.composite));
+      var values = [
+        formatDuration(point.time),
+        "Overall " + point.composite.toFixed(1)
+      ];
+      if (point.vmaf !== null) values.push("VMAF " + point.vmaf.toFixed(1));
+      if (point.phone !== null) values.push("Phone " + point.phone.toFixed(1));
+      if (point.ssim !== null) values.push("SSIM " + point.ssim.toFixed(4));
+      if (point.psnr !== null) values.push("PSNR " + point.psnr.toFixed(2) + " dB");
+      if (point.phash !== null) values.push("pHash " + point.phash.toFixed(1));
+      if (point.temporalPhash !== null) values.push("Temporal pHash " + point.temporalPhash.toFixed(1));
+      readout.textContent = values.join(" · ") + " · click to play";
+      chart.setAttribute("aria-label", values.join(", ") + ". Press Enter to play from this point.");
+    }
+    function nearestIndex(clientX) {
+      var bounds = chart.getBoundingClientRect();
+      var ratio = Math.max(0, Math.min(1, (clientX - bounds.left) / Math.max(1, bounds.width)));
+      var target = ratio * maximumTime;
+      var bestIndex = 0;
+      var bestDistance = Infinity;
+      points.forEach(function (point, index) {
+        var distance = Math.abs(point.time - target);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      });
+      return bestIndex;
+    }
+    chart.addEventListener("pointermove", function (event) { updateSelection(nearestIndex(event.clientX)); });
+    chart.addEventListener("click", function (event) {
+      updateSelection(nearestIndex(event.clientX));
+      seekVideo(video, points[selectedIndex].time);
+    });
+    chart.addEventListener("keydown", function (event) {
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        if (event.key === "Home") updateSelection(0);
+        else if (event.key === "End") updateSelection(points.length - 1);
+        else updateSelection(selectedIndex + (event.key === "ArrowRight" ? 1 : -1));
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        seekVideo(video, points[selectedIndex].time);
+      }
+    });
+    updateSelection(0);
+    return section;
+  }
+
+  function sceneMetric(scene, aliases) {
+    return qualityPointMetric(scene, aliases);
+  }
+
+  function buildWorstSceneTable(report, video) {
+    var scenes = report.worst_scenes || report.scenes || (report.scene_analysis && report.scene_analysis.scenes) || [];
+    if (!Array.isArray(scenes) || !scenes.length) return null;
+    var zeroBasedSceneIndexes = scenes.some(function (scene) { return Number(scene && scene.index) === 0; });
+    scenes = scenes.slice().sort(function (left, right) {
+      var leftScore = qualityMetricValue(left.score);
+      var rightScore = qualityMetricValue(right.score);
+      if (leftScore === null) leftScore = sceneMetric(left, ["composite", "vmaf", "vmaf_standard", "standard_vmaf"]);
+      if (rightScore === null) rightScore = sceneMetric(right, ["composite", "vmaf", "vmaf_standard", "standard_vmaf"]);
+      return (leftScore === null ? Infinity : leftScore) - (rightScore === null ? Infinity : rightScore);
+    }).slice(0, 12);
+
+    var wrap = el("div", "quality-scene-table-wrap");
+    var table = el("table", "stream-table quality-scene-table");
+    var thead = el("thead");
+    var headRow = el("tr");
+    ["Worst scene", "Time", "Score", "Band", "Standard VMAF", "SSIM", "PSNR", "pHash", "Phone VMAF", "Temporal pHash", ""].forEach(function (label) {
+      headRow.appendChild(el("th", "", label));
+    });
+    thead.appendChild(headRow);
+    var tbody = el("tbody");
+    scenes.forEach(function (scene, index) {
+      var start = qualityPointTime(scene, 0);
+      var end = Number(scene.end_seconds != null ? scene.end_seconds : scene.end);
+      var timeText = formatDuration(start) + (Number.isFinite(end) ? "–" + formatDuration(end) : "");
+      var row = el("tr");
+      var sceneScore = qualityMetricValue(scene.score);
+      if (sceneScore === null) sceneScore = sceneMetric(scene, ["composite"]);
+      var playCell = el("td");
+      var play = el("button", "quality-scene-play", "Play");
+      play.type = "button";
+      play.addEventListener("click", function () { seekVideo(video, start); });
+      playCell.appendChild(play);
+      append(
+        row,
+        el("td", "", scene.label || scene.name || "Scene " + (
+          scene.index != null
+            ? Number(scene.index) + (zeroBasedSceneIndexes ? 1 : 0)
+            : index + 1
+        )),
+        el("td", "", timeText),
+        el("td", "", metricDisplay(sceneScore, 1)),
+        el("td", "", scene.band || scene.quality_band || "—"),
+        el("td", "", metricDisplay(sceneMetric(scene, ["vmaf", "vmaf_standard", "standard_vmaf"]), 1)),
+        el("td", "", metricDisplay(sceneMetric(scene, ["ssim", "ssim_y"]), 4)),
+        el("td", "", metricDisplay(sceneMetric(scene, ["psnr", "psnr_y"]), 2, " dB")),
+        el("td", "", metricDisplay(sceneMetric(scene, ["phash", "phash_similarity"]), 1)),
+        el("td", "", metricDisplay(sceneMetric(scene, ["vmaf_phone", "phone_vmaf", "vmaf_mobile"]), 1)),
+        el("td", "", metricDisplay(sceneMetric(scene, ["temporal_phash", "temporal_consistency"]), 1)),
+        playCell
+      );
+      tbody.appendChild(row);
+    });
+    append(table, thead, tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function qualityArtifactLink(basePath, filename, label, download) {
+    if (!/^[A-Za-z0-9._-]+$/.test(filename)) return null;
+    var link = el("a", "quality-artifact", label);
+    link.href = basePath + filename;
+    if (download) link.setAttribute("download", "");
+    else {
+      link.target = "_blank";
+      link.rel = "noopener";
+    }
+    return link;
+  }
+
+  function reportIsHdrNormalized(report) {
+    if (report.hdr_normalized === true || report.hdr_normalization === true) return true;
+    var normalization = report.normalization || (report.settings && report.settings.normalization) || {};
+    if (typeof normalization === "string") return /hdr|tone/i.test(normalization);
+    return normalization.hdr_normalized === true || normalization.applied === true && /hdr|tone/i.test(String(normalization.method || normalization.label || ""));
+  }
+
+  function buildQualityReport(item, report, reportBase, video) {
+    var section = el("section", "section quality-report");
+    section.id = "quality-report";
+    var standard = qualityMetricObject(report, ["vmaf", "vmaf_standard", "standard_vmaf", "libvmaf"]);
+    var phone = qualityMetricObject(report, ["vmaf_phone", "phone_vmaf", "vmaf_mobile"]);
+    var ssim = qualityMetricObject(report, ["ssim", "ssim_y"]);
+    var psnr = qualityMetricObject(report, ["psnr", "psnr_y"]);
+    var phash = qualityMetricObject(report, ["phash", "phash_similarity"]);
+    var composite = qualityMetricObject(report, ["composite"]);
+    var overall = report.overall || report.summary || {};
+    var overallScore = qualityMetricValue(overall.score != null ? overall.score : report.overall_score);
+    if (overallScore === null) overallScore = qualityMetricValue(composite);
+    if (overallScore === null) overallScore = qualityMetricValue(standard);
+    var band = overall.band || overall.quality_band || report.band || report.quality_band || "Unrated";
+
+    var head = el("div", "section-head quality-report-head");
+    var headCopy = el("div");
+    append(headCopy, el("h2", "", "Encoded quality report"), el("p", "", "Objective comparison of this HLS rendition with its source"));
+    var badges = el("div", "quality-report-badges");
+    badges.appendChild(el("span", "quality-band", band));
+    if (reportIsHdrNormalized(report)) {
+      var hdr = el("span", "quality-hdr-badge", "HDR normalized");
+      hdr.title = "The comparison was normalized to a common display-referred range before scoring.";
+      badges.appendChild(hdr);
+    }
+    append(head, headCopy, badges);
+    section.appendChild(head);
+
+    var summary = el("div", "quality-summary");
+    var scoreCard = el("article", "quality-score-card");
+    append(
+      scoreCard,
+      el("span", "", "Overall quality"),
+      el("strong", "", overallScore === null ? "—" : overallScore.toFixed(1)),
+      el("small", "", band + " · standard VMAF is the primary perceptual metric")
+    );
+    summary.appendChild(scoreCard);
+    var metricGrid = el("div", "quality-metric-grid");
+    [
+      ["Standard VMAF", standard, 1, "", "Primary perceptual score", "is-primary"],
+      ["SSIM", ssim, 4, "", "Structural similarity", ""],
+      ["PSNR", psnr, 2, " dB", "Signal fidelity", ""],
+      ["pHash", phash, 1, "", "Cross-stream visual similarity", ""],
+      ["Phone VMAF", phone, 1, "", "Informational phone-viewing model", "is-informational"]
+    ].forEach(function (metric) {
+      var card = el("article", "quality-metric-card " + metric[5]);
+      var label = el("div", "quality-metric-label");
+      label.appendChild(el("span", "", metric[0]));
+      if (metric[5] === "is-primary") label.appendChild(el("small", "", "Primary"));
+      if (metric[5] === "is-informational") label.appendChild(el("small", "", "Informational"));
+      append(
+        card,
+        label,
+        el("strong", "", metricDisplay(metric[1], metric[2], metric[3])),
+        el("p", "", metricDetail(metric[1], metric[2], metric[3]) || metric[4])
+      );
+      metricGrid.appendChild(card);
+    });
+    summary.appendChild(metricGrid);
+    section.appendChild(summary);
+
+    if (reportIsHdrNormalized(report)) {
+      section.appendChild(el("p", "quality-normalization-note", "HDR-normalized comparison · source and encode were converted to the same analysis range so the scores remain comparable."));
+    }
+
+    var timeline = buildQualityTimeline(report, video);
+    if (timeline) {
+      var timelineSection = el("div", "quality-report-block");
+      var timelineHead = el("div", "quality-subhead");
+      append(timelineHead, el("h3", "", "Quality over time"), el("p", "", "Point at the graph to inspect · click to play that moment"));
+      append(timelineSection, timelineHead, timeline);
+      section.appendChild(timelineSection);
+    }
+
+    var scenes = buildWorstSceneTable(report, video);
+    if (scenes) {
+      var sceneSection = el("div", "quality-report-block");
+      var sceneHead = el("div", "quality-subhead");
+      append(sceneHead, el("h3", "", "Worst scenes"), el("p", "", "Lowest overall score first · up to 12 scenes"));
+      append(sceneSection, sceneHead, scenes);
+      section.appendChild(sceneSection);
+    }
+
+    var footer = el("div", "quality-report-footer");
+    var generated = report.generated_at || report.completed_at || report.analyzed_at;
+    footer.appendChild(el("p", "", generated ? "Report generated " + formatDate(generated, true) : "Cached report for this exact source version"));
+    var artifacts = el("div", "quality-artifacts");
+    append(
+      artifacts,
+      qualityArtifactLink(reportBase, "report.json", "Download JSON", true),
+      qualityArtifactLink(reportBase, "frames.csv", "Download frame CSV", true),
+      qualityArtifactLink(reportBase, "report.html", "Open standalone report", false)
+    );
+    append(footer, artifacts);
+    section.appendChild(footer);
+    return section;
+  }
+
+  function loadQualityReport(item) {
+    if (FEATURES.quality_analysis === false) return Promise.resolve(null);
+    var safeKey = String(item.cache_key || "");
+    if (!/^[0-9a-f]{18}--[0-9a-f]{14}$/.test(safeKey)) return Promise.resolve(null);
+    var reportBase = "data/quality/" + encodeURIComponent(safeKey) + "/";
+    return fetch(reportBase + "report.json?_=" + Date.now(), { cache: "no-store", credentials: "same-origin" })
+      .then(function (response) {
+        if (response.status === 404) return null;
+        if (!response.ok) throw new Error("Quality report request returned " + response.status);
+        return response.json();
+      })
+      .then(function (report) {
+        if (!report || report.enabled === false || String(report.state || "").toLowerCase() === "disabled") return null;
+        if (report.cache_key && report.cache_key !== item.cache_key) return null;
+        if (report.video_id && report.video_id !== item.id) return null;
+        if (report.gallery && report.gallery.cache_key && report.gallery.cache_key !== item.cache_key) return null;
+        if (report.gallery && report.gallery.video_id && report.gallery.video_id !== item.id) return null;
+        return { report: report, base: reportBase };
+      })
+      .catch(function () { return null; });
   }
 
   function buildTrackCard(stream, kind, index) {
@@ -1852,7 +2612,12 @@
       });
     });
 
-    app.appendChild(buildContentSignals(item));
+    var contentSignals = buildContentSignals(item);
+    app.appendChild(contentSignals);
+    loadQualityReport(item).then(function (loaded) {
+      if (!loaded || !contentSignals.isConnected) return;
+      contentSignals.insertAdjacentElement("afterend", buildQualityReport(item, loaded.report, loaded.base, video));
+    });
 
     var overview = el("section", "section");
     var overviewHead = el("div", "section-head");
@@ -1988,12 +2753,14 @@
     if (!currentVideoId()) {
       if (FEATURES.encoder_status) loadEncodingProgress();
       if (FEATURES.content_analysis) loadCategoryProgress();
+      if (FEATURES.quality_analysis !== false) loadQualityProgress();
     }
   });
   window.addEventListener("beforeunload", function () {
     destroyPlayer();
     if (telemetryTimer) window.clearInterval(telemetryTimer);
     if (categoryTimer) window.clearInterval(categoryTimer);
+    if (qualityTimer) window.clearInterval(qualityTimer);
     if (catalogTimer) window.clearInterval(catalogTimer);
     if (contentIndexTimer) window.clearInterval(contentIndexTimer);
   });
@@ -2007,6 +2774,10 @@
     categoryTimer = window.setInterval(loadCategoryProgress, 5000);
     loadContentIndex();
     contentIndexTimer = window.setInterval(function () { loadContentIndex(true); }, 60000);
+  }
+  if (FEATURES.quality_analysis !== false) {
+    loadQualityProgress();
+    qualityTimer = window.setInterval(loadQualityProgress, 5000);
   }
   loadCatalog();
   catalogTimer = window.setInterval(function () { loadCatalog(true); }, 30000);

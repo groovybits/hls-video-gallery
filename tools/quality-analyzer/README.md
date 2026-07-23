@@ -4,9 +4,9 @@
 does not read or modify the gallery catalog, HLS cache, or source-media
 directory unless those paths are explicitly supplied as inputs or output.
 
-It aligns the first video stream from each input at a configurable frame rate
-(30 fps by default), normalizes both to the same BT.709 display representation,
-and reports:
+It aligns a selected global reference video stream with the first video stream
+from the distorted input at a configurable frame rate (30 fps by default),
+normalizes both to the same BT.709 display representation, and reports:
 
 - standard VMAF and the VMAF phone transform when the installed model supports it;
 - luma PSNR and SSIM from libvmaf's per-frame feature collectors;
@@ -51,6 +51,7 @@ cmake --build build --parallel
 ```bash
 ./hls-quality-analyzer \
   --reference /path/to/source.mov \
+  --reference-stream-index 0 \
   --distorted /path/to/encoded.mp4 \
   --output-dir /path/to/quality-report \
   --threads 2 \
@@ -58,6 +59,26 @@ cmake --build build --parallel
   --scene-threshold 10 \
   --min-scene-seconds 2
 ```
+
+`--reference-stream-index` is the zero-based global stream index reported by
+`ffprobe`, not the video-only ordinal. If omitted, the standalone tool selects
+the first video stream (`v:0`), which preserves the simple command-line
+behavior even when stream `0` is audio. The gallery worker supplies the
+encoder-selected global index automatically, which keeps files with attached
+pictures, proxy tracks, or alternate camera tracks aligned to the stream that
+was actually encoded. The selected index is recorded in the JSON report;
+standalone automatic selection is recorded as `null`.
+
+For an interlaced source whose encoded comparison is progressive, add:
+
+```bash
+  --deinterlace-reference
+```
+
+This runs `yadif=deint=interlaced` on the reference only, before frame-rate
+alignment. Progressive reference frames pass through unchanged, and the
+encoded comparison is never deinterlaced. The JSON settings and preprocessing
+sections record whether this option was used.
 
 Optional live progress:
 
@@ -85,6 +106,12 @@ The shorter aligned input determines the analyzed duration. The reference is
 scaled to the distorted encode's display dimensions. FFmpeg's normal
 autorotation remains active, and ffprobe rotation metadata is used to determine
 both display dimensions.
+
+Frame-rate selection is performed while each decoded stream still has its
+native input time base. The selected frames are then converted to FFmpeg's
+common `AVTB` time base and rebased to a zero origin. Keeping the native time
+base through the `fps` filter prevents periodic neighboring-frame comparisons
+when, for example, a 60/59.94 fps source is compared with a 30 fps encode.
 
 ## Scene and temporal definitions
 
@@ -127,5 +154,6 @@ make test
 
 The focused smoke test creates a synthetic reference and a real local HLS
 master/variant with relative segments in a temporary directory. It verifies
-the score math and JSON schema and proves hostile-looking filenames remain
-inert argv data.
+the score math and JSON schema, exact global stream selection, 60-to-30 fps
+frame alignment, optional reference-only deinterlacing, and proves
+hostile-looking filenames remain inert argv data.

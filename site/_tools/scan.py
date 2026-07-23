@@ -253,6 +253,7 @@ def clean_stream(stream):
             "field_order": stream.get("field_order") or "",
             "display_aspect_ratio": stream.get("display_aspect_ratio") or "",
             "rotation": stream_rotation(stream),
+            "attached_pic": bool((stream.get("disposition") or {}).get("attached_pic")),
         })
     elif codec_type == "audio":
         details.update({
@@ -269,6 +270,36 @@ def primary_video_stream(streams):
     if not video_streams:
         return None
     return sorted(video_streams, key=lambda stream: (not bool((stream.get("disposition") or {}).get("default")), -integer(stream.get("width")) * integer(stream.get("height"))))[0]
+
+
+def cached_primary_video_stream(video_streams):
+    """Reproduce primary_video_stream() from cached, cleaned stream metadata."""
+    candidates = [
+        stream for stream in (video_streams or [])
+        if isinstance(stream, dict) and not bool(stream.get("attached_pic"))
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda stream: (
+        not bool(stream.get("default")),
+        -integer(stream.get("width")) * integer(stream.get("height")),
+    ))[0]
+
+
+def add_cached_primary_video_stream_index(item, cache_root):
+    """Backfill the encoder-selected global stream index without rebuilding media."""
+    if integer(item.get("primary_video_stream_index"), -1) >= 0:
+        return item, False
+    selected = cached_primary_video_stream(item.get("video_streams"))
+    selected_index = integer((selected or {}).get("index"), -1)
+    if selected_index < 0:
+        return item, False
+    enriched = dict(item)
+    enriched["primary_video_stream_index"] = selected_index
+    cache_key = str(enriched.get("cache_key") or "")
+    if cache_key and Path(cache_key).name == cache_key:
+        atomic_write_json(cache_root / cache_key / "metadata.json", enriched)
+    return enriched, True
 
 
 def primary_audio_stream(streams):
@@ -824,6 +855,7 @@ def process_video(path, relative, stat_result, settings, cache_root, ffmpeg, ffp
             "bit_rate": integer(format_info.get("bit_rate")),
             "format_name": format_info.get("format_name") or "",
             "format_long_name": format_info.get("format_long_name") or "",
+            "primary_video_stream_index": integer(video_stream.get("index")),
             "video_streams": [stream for stream in cleaned_streams if stream["codec_type"] == "video"],
             "audio_streams": [stream for stream in cleaned_streams if stream["codec_type"] == "audio"],
             "subtitle_streams": [stream for stream in cleaned_streams if stream["codec_type"] == "subtitle"],
@@ -1174,6 +1206,11 @@ def main():
             )
             apply_upload_metadata(item, ingest_records.get(stable_id))
             creation_indexed = False
+            stream_selection_indexed = False
+            if not changed:
+                item, stream_selection_indexed = add_cached_primary_video_stream_index(
+                    item, cache_root
+                )
             if not changed and "creation_at" not in item:
                 try:
                     item, creation_indexed = add_cached_creation_time(item, path, ffprobe, cache_root)
@@ -1194,7 +1231,12 @@ def main():
             else:
                 cached_count += 1
                 if arguments.verbose:
-                    suffix = " + creation date indexed" if creation_indexed else ""
+                    indexed = []
+                    if creation_indexed:
+                        indexed.append("creation date")
+                    if stream_selection_indexed:
+                        indexed.append("primary video stream")
+                    suffix = " + {} indexed".format(" and ".join(indexed)) if indexed else ""
                     log("CACHE {}/{} {}{}".format(index, len(videos), relative, suffix))
             publish_catalog(
                 catalog_path, published_by_id, settings, len(videos),

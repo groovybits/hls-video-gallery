@@ -77,6 +77,13 @@ assert 1 <= len(report["timeline"]) <= 1000
 assert sum(scene["frame_count"] for scene in report["scenes"]) == len(frames)
 assert report["video"]["width"] == 256 and report["video"]["height"] == 144
 assert report["summary"]["band"] in {"Excellent", "Very good", "Good", "Fair", "Poor"}
+assert report["settings"]["deinterlace_reference"] is False
+assert report["preprocessing"] == {
+    "frame_alignment": "fps_on_native_time_base_then_avtb_zero_origin",
+    "reference_deinterlace": False,
+    "reference_deinterlace_filter": None,
+    "distorted_deinterlace": False,
+}
 
 scores = []
 for frame in frames:
@@ -96,7 +103,141 @@ expected_overall = 0.70 * weighted_mean + 0.30 * worst
 assert abs(report["summary"]["score"] - expected_overall) < 1e-3
 PY
 
-"$analyzer" --version | grep -q '^hls-quality-analyzer 1\.0\.0$'
+"$analyzer" --version | grep -q '^hls-quality-analyzer 1\.1\.0$'
+
+# Preserve each decoder's native time base until fps has selected its samples.
+# This specifically covers a 60 fps source compared with its 30 fps derivative,
+# where premature AVTB conversion can periodically select the neighboring
+# reference frame.
+ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=320x180:rate=60:duration=2" \
+    -c:v ffv1 "$temporary/alignment-reference.mkv"
+ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -i "$temporary/alignment-reference.mkv" \
+    -vf "fps=fps=30:round=near" -c:v ffv1 \
+    "$temporary/alignment-distorted.mkv"
+"$analyzer" \
+    --reference "$temporary/alignment-reference.mkv" \
+    --distorted "$temporary/alignment-distorted.mkv" \
+    --output-dir "$temporary/alignment-report" \
+    --threads 2 \
+    --frame-rate 30 \
+    --scene-threshold 10 \
+    --min-scene-seconds 1 >/dev/null
+python3 - "$temporary/alignment-report/report.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    report = json.load(handle)
+assert report["video"]["reference_source_fps"] == 60
+assert report["video"]["distorted_source_fps"] == 30
+assert report["video"]["frames_analyzed"] == 60
+assert report["summary"]["score"] > 99
+assert min(frame["phash_similarity"] for frame in report["frames"]) > 99.9
+assert (
+    report["preprocessing"]["frame_alignment"]
+    == "fps_on_native_time_base_then_avtb_zero_origin"
+)
+PY
+
+# Select the same global input-stream index used by the encoder. Stream 0 is
+# deliberately unlike the encoded stream so ignoring the option fails loudly.
+ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -f lavfi -i "color=c=red:size=320x180:rate=10:duration=1" \
+    -f lavfi -i "testsrc2=size=320x180:rate=10:duration=1" \
+    -map 0:v -map 1:v -c:v ffv1 \
+    -disposition:v:0 0 -disposition:v:1 default \
+    "$temporary/multistream-reference.mkv"
+ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -i "$temporary/multistream-reference.mkv" \
+    -map 0:1 -c:v ffv1 "$temporary/multistream-distorted.mkv"
+"$analyzer" \
+    --reference "$temporary/multistream-reference.mkv" \
+    --reference-stream-index 1 \
+    --distorted "$temporary/multistream-distorted.mkv" \
+    --output-dir "$temporary/multistream-report" \
+    --threads 2 \
+    --frame-rate 10 \
+    --scene-threshold 10 \
+    --min-scene-seconds 1 >/dev/null
+python3 - "$temporary/multistream-report/report.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    report = json.load(handle)
+assert report["inputs"]["reference_stream_index"] == 1
+assert report["settings"]["reference_stream_index"] == 1
+assert report["summary"]["score"] > 99
+assert min(frame["phash_similarity"] for frame in report["frames"]) > 99.9
+PY
+
+# Omitting the option remains video-relative for standalone use, even when
+# global stream 0 is audio.
+ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=1" \
+    -f lavfi -i "testsrc2=size=320x180:rate=10:duration=1" \
+    -map 0:a -map 1:v -c:a pcm_s16le -c:v ffv1 \
+    "$temporary/audio-first-reference.mkv"
+ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -i "$temporary/audio-first-reference.mkv" \
+    -map 0:v:0 -c:v ffv1 "$temporary/audio-first-distorted.mkv"
+"$analyzer" \
+    --reference "$temporary/audio-first-reference.mkv" \
+    --distorted "$temporary/audio-first-distorted.mkv" \
+    --output-dir "$temporary/audio-first-report" \
+    --threads 2 \
+    --frame-rate 10 \
+    --scene-threshold 10 \
+    --min-scene-seconds 1 >/dev/null
+python3 - "$temporary/audio-first-report/report.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    report = json.load(handle)
+assert report["inputs"]["reference_stream_index"] is None
+assert report["settings"]["reference_stream_index"] is None
+assert report["summary"]["score"] > 99
+PY
+
+# Interlaced references can be conditionally deinterlaced before fps alignment
+# without filtering the already-progressive encoded comparison.
+if grep -q ' yadif ' <<<"$quality_filter_list" &&
+   grep -q ' tinterlace ' <<<"$quality_filter_list"; then
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -f lavfi -i "testsrc2=size=320x180:rate=60:duration=2" \
+        -vf "tinterlace=mode=interleave_top" -c:v ffv1 \
+        "$temporary/interlaced-reference.mkv"
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -i "$temporary/interlaced-reference.mkv" \
+        -vf "yadif=deint=interlaced,fps=fps=30:round=near" -c:v ffv1 \
+        "$temporary/deinterlaced-distorted.mkv"
+    "$analyzer" \
+        --reference "$temporary/interlaced-reference.mkv" \
+        --distorted "$temporary/deinterlaced-distorted.mkv" \
+        --output-dir "$temporary/deinterlace-report" \
+        --threads 2 \
+        --frame-rate 30 \
+        --scene-threshold 10 \
+        --min-scene-seconds 1 \
+        --deinterlace-reference >/dev/null
+    python3 - "$temporary/deinterlace-report/report.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    report = json.load(handle)
+assert report["settings"]["deinterlace_reference"] is True
+assert report["preprocessing"]["reference_deinterlace"] is True
+assert report["preprocessing"]["reference_deinterlace_filter"] == "yadif=deint=interlaced"
+assert report["preprocessing"]["distorted_deinterlace"] is False
+assert report["video"]["frames_analyzed"] == 60
+assert report["summary"]["score"] > 99
+assert "reference deinterlaced with" in open(
+    sys.argv[1].replace("report.json", "report.html"), encoding="utf-8"
+).read()
+PY
+else
+    echo "SKIP: installed FFmpeg lacks yadif or tinterlace for the interlace smoke"
+fi
 
 # Prove that hostile-looking paths remain argv data and are never evaluated by
 # a shell. A lower configured frame rate also exercises that optional contract.

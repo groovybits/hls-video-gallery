@@ -2,10 +2,10 @@
 Description=Check HLS Video Gallery (@@INSTANCE_ID@@) quality-analysis queue
 
 [Timer]
-OnBootSec=7min
+OnBootSec=30s
 OnUnitInactiveSec=@@QUALITY_INTERVAL@@s
-RandomizedDelaySec=30s
-AccuracySec=15s
+RandomizedDelaySec=0
+AccuracySec=100ms
 Persistent=true
 Unit=hls-gallery-@@INSTANCE_ID@@-quality.service
 

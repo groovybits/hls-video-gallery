@@ -189,12 +189,12 @@ def active_resource_reason(root):
             return "category analysis is active"
         if "ffmpeg" in command and (root_text in command or "/cache/.building-" in command):
             return "video encoding or another media measurement is active"
-    maximum_load = number(os.environ.get("VIDEO_QUALITY_MAX_LOAD"), 1.5)
+    maximum_load = number(os.environ.get("VIDEO_QUALITY_MAX_LOAD"), 0.0)
     try:
         current_load = os.getloadavg()[0]
     except (AttributeError, OSError):
         current_load = 0.0
-    if current_load > maximum_load:
+    if maximum_load > 0 and current_load > maximum_load:
         return "one-minute load {:.2f} exceeds {:.2f}".format(current_load, maximum_load)
     return ""
 
@@ -215,14 +215,49 @@ def safe_item_paths(root, item):
         raise RuntimeError("catalog source escapes the media directory")
     if not source.is_file() or source.is_symlink():
         raise RuntimeError("catalog source is missing or unsafe")
-    distorted = (root / "cache" / cache_key / "hls" / "master.m3u8").resolve()
     cache_root = (root / "cache").resolve()
+    cache_candidate = cache_root / cache_key
+    if cache_candidate.is_symlink():
+        raise RuntimeError("encoded cache directory is a symbolic link")
+    cache_dir = cache_candidate.resolve()
     try:
-        distorted.relative_to(cache_root)
+        cache_dir.relative_to(cache_root)
+    except ValueError:
+        raise RuntimeError("encoded cache path escapes the cache directory")
+    variants = item.get("hls_variants")
+    if isinstance(variants, list):
+        variants = [value for value in variants if isinstance(value, dict)]
+    else:
+        variants = []
+    selected = max(
+        variants,
+        key=lambda value: (
+            integer(value.get("height")),
+            integer(value.get("width")),
+            integer(value.get("video_bitrate")),
+        ),
+        default=None,
+    )
+    playlist = str(selected.get("playlist") or "") if selected else ""
+    hls_candidate = cache_dir / "hls"
+    if hls_candidate.is_symlink():
+        raise RuntimeError("encoded HLS directory is a symbolic link")
+    hls_root = hls_candidate.resolve()
+    try:
+        hls_root.relative_to(cache_dir)
+    except ValueError:
+        raise RuntimeError("encoded HLS path escapes the cache directory")
+    distorted = (
+        hls_root / playlist
+        if playlist
+        else hls_root / "master.m3u8"
+    ).resolve()
+    try:
+        distorted.relative_to(hls_root)
     except ValueError:
         raise RuntimeError("encoded cache path escapes the cache directory")
     if not distorted.is_file():
-        raise RuntimeError("encoded HLS master playlist is missing")
+        raise RuntimeError("encoded HLS comparison playlist is missing")
     return source, distorted
 
 
@@ -252,7 +287,7 @@ def settings():
             os.environ.get("VIDEO_QUALITY_EXPECTED_CONTENT_VERSION", "")
         ).strip(),
         "failure_retry_seconds": max(
-            60, integer(os.environ.get("VIDEO_QUALITY_FAILURE_RETRY_SECONDS"), 3600)
+            1, integer(os.environ.get("VIDEO_QUALITY_FAILURE_RETRY_SECONDS"), 30)
         ),
     }
     measurement_identity = {
@@ -284,12 +319,105 @@ def item_ready_for_content(
     )
 
 
+def selected_video_stream(item):
+    streams = item.get("video_streams")
+    if not isinstance(streams, list):
+        streams = []
+    streams = [value for value in streams if isinstance(value, dict)]
+    selected_index = integer(item.get("primary_video_stream_index"), -1)
+    if selected_index >= 0:
+        selected = next(
+            (
+                value for value in streams
+                if integer(value.get("index"), -1) == selected_index
+            ),
+            None,
+        )
+        if selected is not None:
+            return selected
+        return {"index": selected_index}
+    candidates = [
+        value for value in streams
+        if not truthy(value.get("attached_pic"))
+    ]
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda value: (
+            not bool(value.get("default")),
+            -integer(value.get("width")) * integer(value.get("height")),
+        ),
+    )[0]
+
+
+def reference_stream_index(item):
+    stream = selected_video_stream(item)
+    index = integer((stream or {}).get("index"), -1)
+    if index < 0:
+        raise RuntimeError(
+            "catalog item does not identify the source video stream used for encoding"
+        )
+    return index
+
+
+def source_is_interlaced(item):
+    stream = selected_video_stream(item)
+    field_order = str((stream or {}).get("field_order") or "").strip().lower()
+    return field_order not in {"", "unknown", "progressive"}
+
+
+def iso_epoch(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def encoded_output_current(item, record):
+    current = str(item.get("processed_at") or "").strip()
+    if not current:
+        return True
+    saved = str(record.get("encoded_at") or "").strip()
+    if saved:
+        return saved == current
+    analyzed_epoch = iso_epoch(record.get("analyzed_at"))
+    processed_epoch = iso_epoch(current)
+    return (
+        analyzed_epoch is not None
+        and processed_epoch is not None
+        and analyzed_epoch >= processed_epoch
+    )
+
+
+def throttle_idle_poll(progress_path):
+    previous = load_json(progress_path, {})
+    if not isinstance(previous, dict) or previous.get("state") not in {
+        "complete", "waiting", "error", "pruned",
+    }:
+        return 0.0
+    interval = max(
+        1.0, number(os.environ.get("VIDEO_QUALITY_IDLE_POLL_SECONDS"), 30.0)
+    )
+    updated = iso_epoch(previous.get("updated_at"))
+    if updated is None:
+        return 0.0
+    delay = max(0.0, interval - max(0.0, time.time() - updated))
+    if delay > 0.0:
+        time.sleep(delay)
+    return delay
+
+
 def valid_record(item, record, configuration):
     return (
         isinstance(record, dict)
         and record.get("cache_key") == item.get("cache_key")
         and record.get("settings_signature") == configuration["signature"]
         and record.get("worker_version") == WORKER_VERSION
+        and encoded_output_current(item, record)
     )
 
 
@@ -409,6 +537,7 @@ def queue_state(root, configuration, force=False):
     }
     now = time.time()
     pending = []
+    retry_pending = []
     waiting_content = []
     cooling_down = []
     for item in items:
@@ -425,10 +554,18 @@ def queue_state(root, configuration, force=False):
             waiting_content.append(item)
             continue
         failure = failures.get(str(item["cache_key"]))
-        if not force and isinstance(failure, dict) and number(failure.get("retry_after_epoch")) > now:
-            cooling_down.append(item)
+        if not force and isinstance(failure, dict):
+            if number(failure.get("retry_after_epoch")) > now:
+                cooling_down.append(item)
+            else:
+                # Give never-attempted work priority over retries. With a short
+                # retry cooldown and one item per service run, an early,
+                # permanently broken upload must not starve the rest of the
+                # collection.
+                retry_pending.append(item)
             continue
         pending.append(item)
+    pending.extend(retry_pending)
     return catalog, items, records, failures, pending, waiting_content, cooling_down
 
 
@@ -674,6 +811,7 @@ def report_record(root, report, item, configuration, elapsed):
         "analyzed_at": utc_iso(),
         "analysis_seconds": round(elapsed, 1),
         "duration_seconds": round(number(item.get("duration_seconds")), 3),
+        "encoded_at": item.get("processed_at"),
         "score": summary.get("score"),
         "band": str(summary.get("band") or ""),
         "summary": summary,
@@ -744,6 +882,7 @@ def run_one(root, item, configuration, progress_path, items, records, pending, w
     command = [
         str(binary),
         "--reference", str(source),
+        "--reference-stream-index", str(reference_stream_index(item)),
         "--distorted", str(distorted),
         "--output-dir", str(build_dir),
         "--threads", str(configuration["threads"]),
@@ -752,6 +891,8 @@ def run_one(root, item, configuration, progress_path, items, records, pending, w
         "--min-scene-seconds", str(configuration["min_scene_seconds"]),
         "--progress-json", str(engine_progress),
     ]
+    if source_is_interlaced(item):
+        command.append("--deinterlace-reference")
     started = time.time()
     current = {
         "video_id": item["id"],
@@ -959,6 +1100,11 @@ def main():
     if data_root.is_symlink():
         raise RuntimeError("gallery data root cannot be a symbolic link")
     data_root.mkdir(parents=True, exist_ok=True)
+    # Active queues leave progress in the "idle" state and therefore continue
+    # at the systemd timer's one-second cadence. Terminal/resource-wait states
+    # back off to a 30-second poll without holding any gallery lock, avoiding
+    # permanent one-process-per-second churn once the queue is empty.
+    throttle_idle_poll(progress_path)
     quality_lock = acquire_lock(data_root / "quality-analysis.lock")
     if quality_lock is None:
         print("Another quality-analysis pass is already running; exiting cleanly")

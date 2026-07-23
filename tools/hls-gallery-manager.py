@@ -16,11 +16,17 @@ import tempfile
 import uuid
 
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 CONFIG_PATH = Path(
     os.environ.get(
         "HLS_GALLERY_MANAGER_CONFIG",
         "~/Library/Application Support/HLS Video Gallery/manager.json",
+    )
+).expanduser()
+CONTROL_DIRECTORY = Path(
+    os.environ.get(
+        "HLS_GALLERY_MANAGER_CONTROL_DIR",
+        "~/.cache/hls-gallery-manager",
     )
 ).expanduser()
 VIDEO_EXTENSIONS = {
@@ -432,8 +438,9 @@ def configure(arguments=None, interactive=True):
 
 
 def ssh_base(config):
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    control_path = str(CONFIG_PATH.parent / "ssh-%C")
+    CONTROL_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    os.chmod(CONTROL_DIRECTORY, 0o700)
+    control_path = str(CONTROL_DIRECTORY / "ssh-%C")
     command = [
         "ssh",
         "-o", "ConnectTimeout=15",
@@ -449,8 +456,9 @@ def ssh_base(config):
 
 
 def scp_base(config):
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    control_path = str(CONFIG_PATH.parent / "ssh-%C")
+    CONTROL_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    os.chmod(CONTROL_DIRECTORY, 0o700)
+    control_path = str(CONTROL_DIRECTORY / "ssh-%C")
     command = [
         "scp",
         "-p",

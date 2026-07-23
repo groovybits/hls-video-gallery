@@ -2,6 +2,11 @@
 
 All notable changes are documented here.
 
+## 1.0.1 — 2026-07-23
+
+- Added synchronized pagination controls above and below the video grid.
+- Hid pagination controls when the active filters fit on one page.
+
 ## 1.0.0 — 2026-07-22
 
 - Initial public release.

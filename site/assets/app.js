@@ -1160,48 +1160,58 @@
     return values.filter(function (value, index) { return index === 0 || value !== values[index - 1]; });
   }
 
-  function renderPagination(pagination, totalItems, pageCount, grid, note, shuffleButton) {
-    pagination.replaceChildren();
+  function renderPagination(paginations, totalItems, pageCount, grid, note, shuffleButton) {
+    paginations = Array.isArray(paginations) ? paginations : [paginations];
+    paginations.forEach(function (pagination) {
+      pagination.replaceChildren();
+      pagination.hidden = pageCount <= 1;
+    });
     if (pageCount <= 1) return;
 
     function changePage(page) {
       libraryState.page = Math.min(pageCount, Math.max(1, page));
       syncLibraryUrl();
-      renderGrid(grid, note, pagination, shuffleButton);
+      renderGrid(grid, note, paginations, shuffleButton);
       note.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
-    var previous = el("button", "pager-step", "← Previous");
-    previous.type = "button";
-    previous.disabled = libraryState.page === 1;
-    previous.addEventListener("click", function () { changePage(libraryState.page - 1); });
-    pagination.appendChild(previous);
+    paginations.forEach(function (pagination, paginationIndex) {
+      var previous = el("button", "pager-step", "← Previous");
+      previous.type = "button";
+      previous.disabled = libraryState.page === 1;
+      previous.addEventListener("click", function () { changePage(libraryState.page - 1); });
+      pagination.appendChild(previous);
 
-    var numbers = el("div", "pager-numbers");
-    var shown = pageNumbers(libraryState.page, pageCount);
-    shown.forEach(function (page, index) {
-      if (index && page - shown[index - 1] > 1) numbers.appendChild(el("span", "pager-gap", "…"));
-      var button = el("button", "pager-page", page);
-      button.type = "button";
-      button.setAttribute("aria-label", "Go to page " + page);
-      if (page === libraryState.page) {
-        button.classList.add("is-current");
-        button.setAttribute("aria-current", "page");
-      }
-      button.addEventListener("click", function () { changePage(page); });
-      numbers.appendChild(button);
+      var numbers = el("div", "pager-numbers");
+      var shown = pageNumbers(libraryState.page, pageCount);
+      shown.forEach(function (page, index) {
+        if (index && page - shown[index - 1] > 1) numbers.appendChild(el("span", "pager-gap", "…"));
+        var button = el("button", "pager-page", page);
+        button.type = "button";
+        button.setAttribute("aria-label", "Go to page " + page);
+        if (page === libraryState.page) {
+          button.classList.add("is-current");
+          button.setAttribute("aria-current", "page");
+        }
+        button.addEventListener("click", function () { changePage(page); });
+        numbers.appendChild(button);
+      });
+      pagination.appendChild(numbers);
+
+      var next = el("button", "pager-step", "Next →");
+      next.type = "button";
+      next.disabled = libraryState.page === pageCount;
+      next.addEventListener("click", function () { changePage(libraryState.page + 1); });
+      pagination.appendChild(next);
+      pagination.setAttribute(
+        "aria-label",
+        (paginationIndex === 0 ? "Video pages above results" : "Video pages below results") +
+          " · " + totalItems + " matching videos"
+      );
     });
-    pagination.appendChild(numbers);
-
-    var next = el("button", "pager-step", "Next →");
-    next.type = "button";
-    next.disabled = libraryState.page === pageCount;
-    next.addEventListener("click", function () { changePage(libraryState.page + 1); });
-    pagination.appendChild(next);
-    pagination.setAttribute("aria-label", "Video pages · " + totalItems + " matching videos");
   }
 
-  function renderGrid(grid, note, pagination, shuffleButton) {
+  function renderGrid(grid, note, paginations, shuffleButton) {
     var items = filteredItems();
     var pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
     libraryState.page = Math.min(pageCount, Math.max(1, libraryState.page));
@@ -1223,11 +1233,14 @@
       var empty = el("div", "empty-state");
       append(empty, el("h2", "", "No matching videos"), el("p", "", "Try another search, tag combination, or duration."));
       grid.appendChild(empty);
-      pagination.replaceChildren();
+      paginations.forEach(function (pagination) {
+        pagination.replaceChildren();
+        pagination.hidden = true;
+      });
       return;
     }
     visibleItems.forEach(function (item, cardIndex) { grid.appendChild(buildCard(item, cardIndex)); });
-    renderPagination(pagination, items.length, pageCount, grid, note, shuffleButton);
+    renderPagination(paginations, items.length, pageCount, grid, note, shuffleButton);
   }
 
   function renderLibrary() {
@@ -1346,7 +1359,7 @@
           libraryState.page = 1;
           clearTags.disabled = !libraryState.tags.length;
           updateTagSummary();
-          renderGrid(grid, note, pagination, shuffleButton);
+          renderGrid(grid, note, paginations, shuffleButton);
         });
         group.appendChild(label);
       });
@@ -1356,7 +1369,7 @@
       libraryState.tagMode = tagMode.value;
       libraryState.page = 1;
       updateTagSummary();
-      renderGrid(grid, note, pagination, shuffleButton);
+      renderGrid(grid, note, paginations, shuffleButton);
     });
     tagSource.addEventListener("change", function () {
       libraryState.tagSource = tagSource.value;
@@ -1369,7 +1382,7 @@
       tagPanel.querySelectorAll('input[type="checkbox"]').forEach(function (checkbox) { checkbox.checked = false; });
       clearTags.disabled = true;
       updateTagSummary();
-      renderGrid(grid, note, pagination, shuffleButton);
+      renderGrid(grid, note, paginations, shuffleButton);
     });
     tagFilter.addEventListener("toggle", function () { tagDrawerOpen = tagFilter.open; });
     tagFilter.appendChild(tagPanel);
@@ -1422,25 +1435,27 @@
     var note = el("p", "results-note");
     var grid = el("section", "video-grid");
     grid.setAttribute("aria-label", "Videos");
-    var pagination = el("nav", "pagination");
-    append(app, note, grid, pagination);
+    var paginationTop = el("nav", "pagination pagination-top");
+    var paginationBottom = el("nav", "pagination pagination-bottom");
+    var paginations = [paginationTop, paginationBottom];
+    append(app, note, paginationTop, grid, paginationBottom);
 
     search.addEventListener("input", function () {
       libraryState.query = search.value;
       libraryState.page = 1;
-      renderGrid(grid, note, pagination, shuffleButton);
+      renderGrid(grid, note, paginations, shuffleButton);
     });
     length.addEventListener("change", function () {
       libraryState.length = length.value;
       libraryState.page = 1;
-      renderGrid(grid, note, pagination, shuffleButton);
+      renderGrid(grid, note, paginations, shuffleButton);
     });
     sort.addEventListener("change", function () {
       libraryState.sort = sort.value;
       libraryState.page = 1;
-      renderGrid(grid, note, pagination, shuffleButton);
+      renderGrid(grid, note, paginations, shuffleButton);
     });
-    renderGrid(grid, note, pagination, shuffleButton);
+    renderGrid(grid, note, paginations, shuffleButton);
     if (FEATURES.encoder_status) app.appendChild(buildEncodingMonitor());
     if (FEATURES.content_analysis) app.appendChild(buildCategoryMonitor());
   }

@@ -2,6 +2,23 @@
 
 All notable changes are documented here.
 
+## 1.4.0 — 2026-07-23
+
+- Replaced the compact quality timeline with an interactive, Grafana-inspired
+  explorer that compares overall score, Standard and Phone VMAF, normalized
+  SSIM and PSNR, pHash, and temporal consistency on one 0–100 chart.
+- Added range zooming, keyboard inspection, exact-time playback, quality-band
+  backgrounds, scene overlays, HLS-segment boundaries, and a fixed multi-metric
+  readout for close comparison.
+- Added complete scene and HLS-segment drill-down tables with timeline/weakest
+  sorting, per-metric averages and worst deciles, byte sizes, and focus/play
+  controls.
+- Added a separately versioned `dashboard.json` presentation cache. It is
+  backfilled from existing frame reports and exact media playlists without
+  decoding video, rerunning VMAF, or invalidating current quality reports.
+- Kept a report-only fallback with nominal segment boundaries so older
+  installations remain useful while the small dashboard cache is prepared.
+
 ## 1.3.2 — 2026-07-23
 
 - Removed the multi-minute gaps between objective-quality jobs: the queue now

@@ -27,6 +27,7 @@
   var BRAND = CONFIG.brand || {};
   var FEATURES = CONFIG.features || {};
   var GALLERY = CONFIG.gallery || {};
+  var QUALITY_EXPLORER = window.HlsQualityExplorer || null;
   var PAGE_SIZE = Math.max(1, Number(GALLERY.page_size) || 10);
   var CONTENT_TAGS = Array.isArray(CONFIG.content_tags) ? CONFIG.content_tags : [
     { key: "uncategorized", label: "Uncategorized", group: "Other", filename_patterns: [] }
@@ -2013,6 +2014,7 @@
   function qualityMetricObject(report, aliases) {
     var sources = [
       report && report.metrics,
+      report && report.summary,
       report && report.summary && report.summary.metrics,
       report && report.overall && report.overall.metrics,
       report
@@ -2308,6 +2310,806 @@
     return wrap;
   }
 
+  var QUALITY_SERIES = [
+    { key: "composite", label: "Overall", className: "composite", decimals: 1, primary: true },
+    { key: "vmaf", label: "Standard VMAF", className: "standard", decimals: 1 },
+    { key: "ssimNormalized", label: "SSIM score", className: "ssim", decimals: 1 },
+    { key: "psnrNormalized", label: "PSNR score", className: "psnr", decimals: 1 },
+    { key: "phash", label: "pHash", className: "phash", decimals: 1 },
+    { key: "phone", label: "Phone VMAF", className: "phone", decimals: 1, informational: true },
+    { key: "temporalPhash", label: "Temporal pHash", className: "temporal", decimals: 1, informational: true }
+  ];
+
+  var QUALITY_RANGE_ALIASES = {
+    composite: ["composite"],
+    vmaf: ["vmaf", "vmaf_standard", "standard_vmaf"],
+    phone: ["phone", "vmaf_phone", "phone_vmaf"],
+    ssim: ["ssim", "ssim_y"],
+    ssimNormalized: ["ssimNormalized", "ssim_normalized"],
+    psnr: ["psnr", "psnr_y"],
+    psnrNormalized: ["psnrNormalized", "psnr_normalized"],
+    phash: ["phash", "phash_similarity"],
+    temporalPhash: ["temporalPhash", "temporal_consistency", "temporal_phash"]
+  };
+
+  function finiteQualityNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    var numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  function qualitySummaryNumber(value, aliases) {
+    if (value === null || value === undefined) return null;
+    if (typeof value !== "object") return finiteQualityNumber(value);
+    for (var index = 0; index < aliases.length; index += 1) {
+      var numeric = finiteQualityNumber(value[aliases[index]]);
+      if (numeric !== null) return numeric;
+    }
+    return null;
+  }
+
+  function qualityRangeMetric(range, key) {
+    var aliases = QUALITY_RANGE_ALIASES[key] || [key];
+    var sources = [
+      range && range.metrics,
+      range && range.source && range.source.metrics,
+      range,
+      range && range.source
+    ];
+    var value = null;
+    for (var sourceIndex = 0; sourceIndex < sources.length && value === null; sourceIndex += 1) {
+      var source = sources[sourceIndex];
+      if (!source || typeof source !== "object") continue;
+      for (var aliasIndex = 0; aliasIndex < aliases.length; aliasIndex += 1) {
+        if (Object.prototype.hasOwnProperty.call(source, aliases[aliasIndex])) {
+          value = source[aliases[aliasIndex]];
+          break;
+        }
+      }
+    }
+    return {
+      mean: qualitySummaryNumber(value, ["mean", "average", "weighted_mean", "score", "value"]),
+      worstDecile: qualitySummaryNumber(value, ["worstDecile", "worst_decile", "p10", "p5", "min", "minimum"]),
+      min: qualitySummaryNumber(value, ["min", "minimum"]),
+      max: qualitySummaryNumber(value, ["max", "maximum"])
+    };
+  }
+
+  function normalizeQualityRange(raw, ordinal, kind) {
+    raw = raw && typeof raw === "object" ? raw : {};
+    var source = raw.source && typeof raw.source === "object" ? raw.source : raw;
+    var start = finiteQualityNumber(raw.start);
+    if (start === null) start = finiteQualityNumber(raw.start_seconds);
+    if (start === null) start = finiteQualityNumber(source.start_seconds);
+    if (start === null) start = finiteQualityNumber(source.start);
+    if (start === null) start = 0;
+    var end = finiteQualityNumber(raw.end);
+    if (end === null) end = finiteQualityNumber(raw.end_seconds);
+    if (end === null) end = finiteQualityNumber(source.end_seconds);
+    if (end === null) end = finiteQualityNumber(source.end);
+    var duration = finiteQualityNumber(raw.duration);
+    if (duration === null) duration = finiteQualityNumber(raw.duration_seconds);
+    if (duration === null) duration = finiteQualityNumber(source.duration_seconds);
+    if (end === null && duration !== null) end = start + duration;
+    if (end === null || end < start) end = start;
+    var score = finiteQualityNumber(raw.score);
+    if (score === null) score = finiteQualityNumber(source.score);
+    var result = {
+      index: raw.index !== undefined && raw.index !== null ? raw.index : (
+        source.index !== undefined && source.index !== null ? source.index : ordinal + 1
+      ),
+      displayIndex: ordinal + 1,
+      start: Math.max(0, start),
+      end: Math.max(0, end),
+      duration: Math.max(0, end - start),
+      score: score,
+      band: raw.band || source.band || source.quality_band || "Unrated",
+      metrics: raw.metrics || source.metrics || {},
+      source: source,
+      exact: kind === "segment" ? raw.exact !== false : true,
+      uri: raw.uri || source.uri || null,
+      sequence: raw.sequence !== undefined ? raw.sequence : source.sequence,
+      sizeBytes: finiteQualityNumber(raw.size_bytes != null ? raw.size_bytes : source.size_bytes),
+      bitrate: finiteQualityNumber(raw.bitrate_bps != null ? raw.bitrate_bps : source.bitrate_bps),
+      frameCount: finiteQualityNumber(raw.frame_count != null ? raw.frame_count : source.frame_count),
+      sceneIndexes: raw.scene_indexes || source.scene_indexes || [],
+      label: raw.label || source.label || source.name || null,
+      sceneChangeStrength: finiteQualityNumber(
+        raw.sceneChangeStrength != null ? raw.sceneChangeStrength : source.scene_change_strength
+      )
+    };
+    var composite = qualityRangeMetric(result, "composite");
+    if (result.score === null && composite.mean !== null && composite.worstDecile !== null) {
+      result.score = .7 * composite.mean + .3 * composite.worstDecile;
+    }
+    if (!result.band || result.band === "Unrated") {
+      result.band = result.score === null ? "Unrated" : (
+        result.score >= 90 ? "Excellent" :
+          result.score >= 80 ? "Very good" :
+            result.score >= 70 ? "Good" :
+              result.score >= 55 ? "Fair" : "Poor"
+      );
+    }
+    return result;
+  }
+
+  function mergeRangeSummaries(ranges, summaries, kind) {
+    return ranges.map(function (range, index) {
+      var summary = summaries[index] || {};
+      var merged = Object.assign({}, summary, range);
+      if (!range.metrics || !Object.keys(range.metrics).length) merged.metrics = summary.metrics || {};
+      if (range.score === null || range.score === undefined) merged.score = summary.score;
+      if (!range.band || range.band === "Unrated") merged.band = summary.band;
+      return normalizeQualityRange(merged, index, kind);
+    });
+  }
+
+  function prepareQualityExplorerData(report, item) {
+    if (!QUALITY_EXPLORER) return null;
+    var overview = report && report.overview;
+    var overviewPoints = overview && Array.isArray(overview.points) ? overview.points : (
+      Array.isArray(report.overview_points) ? report.overview_points : null
+    );
+    var pointReport = overviewPoints
+      ? Object.assign({}, report, { frames: overviewPoints })
+      : report;
+    var points = QUALITY_EXPLORER.reportPoints(pointReport);
+    if (points.length < 2) return null;
+    var duration = finiteQualityNumber(report && report.video && report.video.duration_seconds);
+    if (duration === null) duration = finiteQualityNumber(item && item.duration_seconds);
+    if (duration === null) duration = points[points.length - 1].time;
+    duration = Math.max(0.1, duration, points[points.length - 1].time);
+
+    var rawScenes = Array.isArray(report.scenes) ? report.scenes : [];
+    var sceneRanges = rawScenes.length
+      ? rawScenes.map(function (range, index) { return normalizeQualityRange(range, index, "scene"); })
+      : QUALITY_EXPLORER.reportScenes(report).map(function (range, index) {
+        return normalizeQualityRange(range, index, "scene");
+      });
+    var scenes = mergeRangeSummaries(
+      sceneRanges,
+      QUALITY_EXPLORER.summarizeRanges(points, sceneRanges),
+      "scene"
+    );
+
+    var rawSegments = Array.isArray(report.hls_segments) ? report.hls_segments : [];
+    var exactSegments = rawSegments.length > 0;
+    var segmentRanges = rawSegments.map(function (range, index) {
+      var normalized = normalizeQualityRange(range, index, "segment");
+      normalized.exact = true;
+      return normalized;
+    });
+    if (!segmentRanges.length) {
+      segmentRanges = QUALITY_EXPLORER.nominalSegments(
+        duration,
+        Number(catalog && catalog.hls_segment_seconds) || 6
+      ).map(function (range, index) {
+        return normalizeQualityRange(range, index, "segment");
+      });
+    }
+    var segments = mergeRangeSummaries(
+      segmentRanges,
+      QUALITY_EXPLORER.summarizeRanges(points, segmentRanges),
+      "segment"
+    );
+    segments.forEach(function (segment) { segment.exact = exactSegments; });
+    return {
+      points: points,
+      scenes: scenes,
+      segments: segments,
+      duration: duration,
+      exactSegments: exactSegments,
+      sourceFrameCount: finiteQualityNumber(overview && overview.source_frame_count) || points.length,
+      displayedPointCount: points.length
+    };
+  }
+
+  function qualityRangeAtTime(ranges, seconds) {
+    var low = 0;
+    var high = ranges.length - 1;
+    while (low <= high) {
+      var middle = Math.floor((low + high) / 2);
+      var range = ranges[middle];
+      if (seconds < range.start) high = middle - 1;
+      else if (seconds >= range.end) low = middle + 1;
+      else return range;
+    }
+    return null;
+  }
+
+  function qualityMetricReadout(point, key) {
+    if (!point) return "—";
+    if (key === "ssimNormalized") {
+      return (point.ssim === null ? "—" : point.ssim.toFixed(4)) +
+        (point.ssimNormalized === null ? "" : " · score " + point.ssimNormalized.toFixed(1));
+    }
+    if (key === "psnrNormalized") {
+      return (point.psnr === null ? "—" : point.psnr.toFixed(2) + " dB") +
+        (point.psnrNormalized === null ? "" : " · score " + point.psnrNormalized.toFixed(1));
+    }
+    var value = finiteQualityNumber(point[key]);
+    return value === null ? "—" : value.toFixed(1);
+  }
+
+  function qualityTableMetricCell(range, key, decimals, suffix, secondaryKey) {
+    var cell = el("td", "quality-table-metric");
+    var metric = qualityRangeMetric(range, key);
+    var primary = metric.mean === null ? "—" : metric.mean.toFixed(decimals) + (suffix || "");
+    if (secondaryKey) {
+      var secondary = qualityRangeMetric(range, secondaryKey);
+      if (secondary.mean !== null) primary += " / " + secondary.mean.toFixed(1);
+    }
+    cell.appendChild(el("strong", "", primary));
+    var worst = metric.worstDecile;
+    if (secondaryKey) {
+      var secondaryWorst = qualityRangeMetric(range, secondaryKey).worstDecile;
+      cell.appendChild(el("small", "", "low 10% " + (
+        worst === null ? "—" : worst.toFixed(decimals) + (suffix || "")
+      ) + (secondaryWorst === null ? "" : " / " + secondaryWorst.toFixed(1))));
+    } else {
+      cell.appendChild(el("small", "", "low 10% " + (
+        worst === null ? "—" : worst.toFixed(decimals) + (suffix || "")
+      )));
+    }
+    return cell;
+  }
+
+  function buildQualityRangeTable(title, ranges, kind, video, focusRange, initiallyOpen) {
+    var details = el("details", "quality-drilldown");
+    details.open = initiallyOpen;
+    var summary = el("summary");
+    append(
+      summary,
+      el("strong", "", title),
+      el("span", "", ranges.length.toLocaleString() + " " + (ranges.length === 1 ? "interval" : "intervals"))
+    );
+    details.appendChild(summary);
+    var built = false;
+    function build() {
+      if (built) return;
+      built = true;
+      var body = el("div", "quality-drilldown-body");
+      var tools = el("div", "quality-table-tools");
+      var sortLabel = el("label");
+      append(sortLabel, el("span", "", "Order"), el("select"));
+      var sort = sortLabel.querySelector("select");
+      append(sort, el("option", "", "Timeline"), el("option", "", "Weakest first"));
+      sort.options[0].value = "timeline";
+      sort.options[1].value = "weakest";
+      var pager = el("div", "quality-mini-pager");
+      var previous = el("button", "", "← Previous");
+      var pageLabel = el("span");
+      var next = el("button", "", "Next →");
+      previous.type = "button";
+      next.type = "button";
+      append(pager, previous, pageLabel, next);
+      append(tools, sortLabel, pager);
+      body.appendChild(tools);
+
+      var scroll = el("div", "quality-table-scroll");
+      var table = el("table", "stream-table quality-detail-table");
+      var thead = el("thead");
+      var head = el("tr");
+      [
+        kind === "scene" ? "Scene" : "HLS segment",
+        "Range", "Overall", "VMAF", "SSIM / score", "PSNR / score",
+        "pHash", "Phone", "Temporal", kind === "segment" ? "Data" : "Frames", "Actions"
+      ].forEach(function (label) { head.appendChild(el("th", "", label)); });
+      thead.appendChild(head);
+      var tbody = el("tbody");
+      append(table, thead, tbody);
+      scroll.appendChild(table);
+      body.appendChild(scroll);
+      details.appendChild(body);
+
+      var page = 1;
+      var pageSize = 100;
+      function orderedRanges() {
+        var result = ranges.slice();
+        if (sort.value === "weakest") {
+          result.sort(function (left, right) {
+            var leftScore = finiteQualityNumber(left.score);
+            var rightScore = finiteQualityNumber(right.score);
+            return (leftScore === null ? Infinity : leftScore) - (rightScore === null ? Infinity : rightScore);
+          });
+        } else {
+          result.sort(function (left, right) { return left.start - right.start; });
+        }
+        return result;
+      }
+      function renderRows() {
+        var ordered = orderedRanges();
+        var pages = Math.max(1, Math.ceil(ordered.length / pageSize));
+        page = Math.max(1, Math.min(pages, page));
+        tbody.replaceChildren();
+        ordered.slice((page - 1) * pageSize, page * pageSize).forEach(function (range) {
+          var row = el("tr", "quality-band-row is-" + String(range.band || "unrated").toLowerCase().replace(/\s+/g, "-"));
+          var name = kind === "scene"
+            ? (range.label || "Scene " + range.index)
+            : "Segment " + range.displayIndex;
+          var nameCell = el("td");
+          nameCell.appendChild(el("strong", "", name));
+          if (kind === "segment") {
+            nameCell.appendChild(el("small", "", range.exact ? "Exact HLS" : "Nominal boundary"));
+          } else if (range.sceneChangeStrength !== null) {
+            nameCell.appendChild(el("small", "", "Cut strength " + range.sceneChangeStrength.toFixed(2)));
+          }
+          var timeCell = el("td");
+          append(
+            timeCell,
+            el("strong", "", formatDuration(range.start) + "–" + formatDuration(range.end)),
+            el("small", "", formatDuration(range.duration))
+          );
+          var scoreCell = el("td", "quality-table-score");
+          append(
+            scoreCell,
+            el("strong", "", range.score === null ? "—" : range.score.toFixed(1)),
+            el("small", "", range.band || "Unrated")
+          );
+          var dataCell = el("td");
+          if (kind === "segment") {
+            append(
+              dataCell,
+              el("strong", "", range.sizeBytes === null ? "—" : formatBytes(range.sizeBytes)),
+              el("small", "", range.bitrate === null ? "" : formatBitrate(range.bitrate))
+            );
+          } else {
+            append(
+              dataCell,
+              el("strong", "", range.frameCount === null ? "—" : Math.round(range.frameCount).toLocaleString()),
+              el("small", "", "aligned frames")
+            );
+          }
+          var actions = el("td", "quality-table-actions");
+          var focus = el("button", "", "Focus");
+          var play = el("button", "", "Play");
+          focus.type = "button";
+          play.type = "button";
+          focus.addEventListener("click", function () { focusRange(range, name); });
+          play.addEventListener("click", function () { seekVideo(video, range.start); });
+          append(actions, focus, play);
+          append(
+            row,
+            nameCell,
+            timeCell,
+            scoreCell,
+            qualityTableMetricCell(range, "vmaf", 1),
+            qualityTableMetricCell(range, "ssim", 4, "", "ssimNormalized"),
+            qualityTableMetricCell(range, "psnr", 2, " dB", "psnrNormalized"),
+            qualityTableMetricCell(range, "phash", 1),
+            qualityTableMetricCell(range, "phone", 1),
+            qualityTableMetricCell(range, "temporalPhash", 1),
+            dataCell,
+            actions
+          );
+          tbody.appendChild(row);
+        });
+        pageLabel.textContent = "Page " + page + " of " + pages;
+        previous.disabled = page <= 1;
+        next.disabled = page >= pages;
+      }
+      sort.addEventListener("change", function () { page = 1; renderRows(); });
+      previous.addEventListener("click", function () { page -= 1; renderRows(); scroll.scrollTop = 0; });
+      next.addEventListener("click", function () { page += 1; renderRows(); scroll.scrollTop = 0; });
+      renderRows();
+    }
+    details.addEventListener("toggle", function () { if (details.open) build(); });
+    if (details.open) build();
+    return details;
+  }
+
+  function buildDetailedQualityExplorer(report, item, video) {
+    var data = prepareQualityExplorerData(report, item);
+    if (!data) return null;
+    var root = el("div", "quality-explorer");
+    var state = {
+      start: 0,
+      end: data.duration,
+      selectedTime: 0,
+      rangeLabel: "Full video",
+      showScenes: true,
+      showSegments: true,
+      visible: {}
+    };
+    QUALITY_SERIES.forEach(function (series) { state.visible[series.key] = true; });
+
+    var top = el("div", "quality-explorer-top");
+    var heading = el("div");
+    append(
+      heading,
+      el("span", "quality-kicker", "FRAME-LEVEL QUALITY"),
+      el("h4", "", "Quality explorer"),
+      el("p", "", "Compare every score, inspect scenes and HLS segments, then play any point.")
+    );
+    var rangeStats = el("div", "quality-range-stats");
+    append(top, heading, rangeStats);
+    root.appendChild(top);
+
+    var metricBar = el("div", "quality-metric-toggles");
+    QUALITY_SERIES.forEach(function (series) {
+      var button = el("button", "quality-series-toggle is-" + series.className, series.label);
+      button.type = "button";
+      button.setAttribute("aria-pressed", "true");
+      if (series.informational) button.title = "Informational metric; it is not part of the overall score";
+      button.addEventListener("click", function () {
+        state.visible[series.key] = !state.visible[series.key];
+        button.setAttribute("aria-pressed", String(state.visible[series.key]));
+        drawChart();
+      });
+      metricBar.appendChild(button);
+    });
+    [
+      ["Scenes", "showScenes"],
+      ["HLS segments", "showSegments"]
+    ].forEach(function (overlay) {
+      var button = el("button", "quality-overlay-toggle", overlay[0]);
+      button.type = "button";
+      button.setAttribute("aria-pressed", "true");
+      button.addEventListener("click", function () {
+        state[overlay[1]] = !state[overlay[1]];
+        button.setAttribute("aria-pressed", String(state[overlay[1]]));
+        drawChart();
+      });
+      metricBar.appendChild(button);
+    });
+    root.appendChild(metricBar);
+
+    var controls = el("div", "quality-range-controls");
+    var fullButton = el("button", "", "Full video");
+    var zoomInButton = el("button", "", "Zoom in");
+    var zoomOutButton = el("button", "", "Zoom out");
+    var weakestButton = el("button", "is-accent", "Weakest scene");
+    [fullButton, zoomInButton, zoomOutButton, weakestButton].forEach(function (button) {
+      button.type = "button";
+      controls.appendChild(button);
+    });
+    var rangeText = el("span");
+    controls.appendChild(rangeText);
+    root.appendChild(controls);
+
+    var plotShell = el("div", "quality-plot-shell");
+    var yAxis = el("div", "quality-y-axis");
+    [100, 75, 50, 25, 0].forEach(function (value) {
+      var label = el("span", "", value);
+      label.style.top = (100 - value) + "%";
+      yAxis.appendChild(label);
+    });
+    var chart = el("div", "quality-chart quality-chart-detailed");
+    chart.tabIndex = 0;
+    chart.setAttribute("role", "application");
+    chart.setAttribute("aria-label", "Frame-level quality graph. Use arrow keys to inspect, Page Up and Page Down to move the range, and Enter to play.");
+    var svg = svgNode("svg", {
+      viewBox: "0 0 1000 320",
+      preserveAspectRatio: "none",
+      "aria-hidden": "true"
+    });
+    chart.appendChild(svg);
+    append(plotShell, yAxis, chart);
+    root.appendChild(plotShell);
+    var xAxis = el("div", "quality-x-axis");
+    root.appendChild(xAxis);
+
+    var inspector = el("div", "quality-inspector");
+    var inspectorContext = el("div", "quality-inspector-context");
+    var inspectorMetrics = el("div", "quality-inspector-metrics");
+    QUALITY_SERIES.forEach(function (series) {
+      var card = el("article", "is-" + series.className);
+      append(card, el("span", "", series.label), el("strong", "", "—"));
+      inspectorMetrics.appendChild(card);
+    });
+    append(inspector, inspectorContext, inspectorMetrics);
+    root.appendChild(inspector);
+
+    var tracks = el("div", "quality-tracks");
+    root.appendChild(tracks);
+    var cursor = null;
+    var marker = null;
+
+    function xForTime(seconds) {
+      return (seconds - state.start) / Math.max(.001, state.end - state.start) * 1000;
+    }
+    function yForScore(value) {
+      return 320 - Math.max(0, Math.min(100, Number(value) || 0)) / 100 * 320;
+    }
+    function rangesInView(ranges) {
+      return ranges.filter(function (range) {
+        return range.end > state.start && range.start < state.end;
+      });
+    }
+    function appendSeries(series, points) {
+      var current = [];
+      function flush() {
+        if (current.length > 1) {
+          svg.appendChild(svgNode("polyline", {
+            points: current.join(" "),
+            class: "quality-line quality-line-" + series.className
+          }));
+        }
+        current = [];
+      }
+      points.forEach(function (point) {
+        var value = finiteQualityNumber(point[series.key]);
+        if (value === null) {
+          flush();
+          return;
+        }
+        current.push(xForTime(point.time).toFixed(2) + "," + yForScore(value).toFixed(2));
+      });
+      flush();
+    }
+    function appendIntervalOverlay(range, index, kind) {
+      var start = Math.max(state.start, range.start);
+      var end = Math.min(state.end, range.end);
+      if (end <= start) return;
+      if (kind === "scene") {
+        var rectangle = svgNode("rect", {
+          x: xForTime(start),
+          y: 0,
+          width: Math.max(.3, xForTime(end) - xForTime(start)),
+          height: 320,
+          class: "quality-scene-band " + (index % 2 ? "is-odd" : "is-even")
+        });
+        var title = svgNode("title");
+        title.textContent = "Scene " + range.index + " · " + formatDuration(range.start) + "–" + formatDuration(range.end);
+        rectangle.appendChild(title);
+        svg.appendChild(rectangle);
+      } else {
+        svg.appendChild(svgNode("line", {
+          x1: xForTime(start),
+          y1: 0,
+          x2: xForTime(start),
+          y2: 320,
+          class: "quality-segment-boundary " + (range.exact ? "is-exact" : "is-nominal")
+        }));
+      }
+    }
+    function drawTracks() {
+      tracks.replaceChildren();
+      [
+        { title: "Scenes", ranges: data.scenes, kind: "scene", visible: state.showScenes },
+        { title: data.exactSegments ? "Exact HLS segments" : "Nominal HLS segments", ranges: data.segments, kind: "segment", visible: state.showSegments }
+      ].forEach(function (trackData) {
+        if (!trackData.visible || !trackData.ranges.length) return;
+        var wrap = el("div", "quality-track");
+        var label = el("div");
+        append(label, el("strong", "", trackData.title), el("span"));
+        var bar = el("div", "quality-track-bar");
+        var visible = rangesInView(trackData.ranges);
+        label.querySelector("span").textContent = visible.length.toLocaleString() + " in view";
+        var step = Math.max(1, Math.ceil(visible.length / 350));
+        visible.forEach(function (range, index) {
+          if (index % step !== 0 && index + 1 !== visible.length) return;
+          var button = el("button", "is-" + String(range.band || "unrated").toLowerCase().replace(/\s+/g, "-"));
+          button.type = "button";
+          button.style.left = Math.max(0, xForTime(Math.max(state.start, range.start)) / 10) + "%";
+          button.style.width = Math.max(.18, (
+            xForTime(Math.min(state.end, range.end)) - xForTime(Math.max(state.start, range.start))
+          ) / 10) + "%";
+          button.title = (trackData.kind === "scene" ? "Scene " + range.index : "Segment " + range.displayIndex) +
+            " · " + formatDuration(range.start) + "–" + formatDuration(range.end) +
+            (range.score === null ? "" : " · " + range.score.toFixed(1));
+          button.setAttribute("aria-label", button.title + ". Focus this interval.");
+          button.addEventListener("click", function () {
+            focusRange(
+              range,
+              trackData.kind === "scene" ? "Scene " + range.index : "HLS segment " + range.displayIndex
+            );
+          });
+          bar.appendChild(button);
+        });
+        append(wrap, label, bar);
+        tracks.appendChild(wrap);
+      });
+    }
+    function updateInspector(point) {
+      var scene = qualityRangeAtTime(data.scenes, point.time);
+      var segment = qualityRangeAtTime(data.segments, point.time);
+      inspectorContext.replaceChildren();
+      append(
+        inspectorContext,
+        el("strong", "", formatDuration(point.time)),
+        el("span", "", (scene ? "Scene " + scene.index : "No scene") + " · " + (
+          segment ? "HLS " + segment.displayIndex : "No segment"
+        )),
+        el("small", "", "Frame " + (point.frame === null ? "—" : Math.round(point.frame).toLocaleString()) + " · click graph to play")
+      );
+      QUALITY_SERIES.forEach(function (series, index) {
+        inspectorMetrics.children[index].querySelector("strong").textContent = qualityMetricReadout(point, series.key);
+      });
+      var x = xForTime(point.time);
+      if (cursor) {
+        cursor.setAttribute("x1", x);
+        cursor.setAttribute("x2", x);
+      }
+      if (marker) {
+        marker.setAttribute("cx", x);
+        marker.setAttribute("cy", yForScore(point.composite));
+      }
+      chart.setAttribute(
+        "aria-label",
+        "Selected " + formatDuration(point.time) + ", overall " + qualityMetricReadout(point, "composite") +
+        ". Press Enter to play."
+      );
+    }
+    function selectTime(seconds) {
+      var index = QUALITY_EXPLORER.nearestPointIndex(data.points, seconds);
+      if (index < 0) return;
+      state.selectedTime = data.points[index].time;
+      updateInspector(data.points[index]);
+    }
+    function drawChart() {
+      svg.replaceChildren();
+      [
+        [90, 100, "excellent"],
+        [80, 90, "very-good"],
+        [70, 80, "good"],
+        [55, 70, "fair"],
+        [0, 55, "poor"]
+      ].forEach(function (band) {
+        svg.appendChild(svgNode("rect", {
+          x: 0,
+          y: yForScore(band[1]),
+          width: 1000,
+          height: yForScore(band[0]) - yForScore(band[1]),
+          class: "quality-score-band is-" + band[2]
+        }));
+      });
+      if (state.showScenes) {
+        rangesInView(data.scenes).forEach(function (range, index) {
+          appendIntervalOverlay(range, index, "scene");
+        });
+      }
+      [0, 25, 50, 75, 100].forEach(function (value) {
+        svg.appendChild(svgNode("line", {
+          x1: 0, y1: yForScore(value), x2: 1000, y2: yForScore(value),
+          class: "quality-grid-line"
+        }));
+      });
+      if (state.showSegments) {
+        var visibleSegments = rangesInView(data.segments);
+        var step = Math.max(1, Math.ceil(visibleSegments.length / 600));
+        visibleSegments.forEach(function (range, index) {
+          if (index % step === 0) appendIntervalOverlay(range, index, "segment");
+        });
+      }
+      var visibleKeys = QUALITY_SERIES.filter(function (series) {
+        return state.visible[series.key];
+      }).map(function (series) { return series.key; });
+      var sampled = QUALITY_EXPLORER.downsample(
+        data.points, state.start, state.end, 850, visibleKeys
+      );
+      QUALITY_SERIES.forEach(function (series) {
+        if (state.visible[series.key]) appendSeries(series, sampled);
+      });
+      cursor = svgNode("line", {
+        x1: xForTime(state.selectedTime), y1: 0,
+        x2: xForTime(state.selectedTime), y2: 320,
+        class: "quality-chart-cursor"
+      });
+      marker = svgNode("circle", {
+        cx: xForTime(state.selectedTime),
+        cy: yForScore((data.points[QUALITY_EXPLORER.nearestPointIndex(data.points, state.selectedTime)] || {}).composite),
+        r: 5,
+        class: "quality-chart-marker"
+      });
+      append(svg, cursor, marker);
+      xAxis.replaceChildren();
+      for (var tick = 0; tick < 5; tick += 1) {
+        var seconds = state.start + (state.end - state.start) * tick / 4;
+        xAxis.appendChild(el("span", "", formatDuration(seconds)));
+      }
+      rangeText.textContent = formatDuration(state.start) + "–" + formatDuration(state.end) + " · " + state.rangeLabel;
+      rangeStats.replaceChildren();
+      var visibleFrames = data.points.filter(function (point) {
+        return point.time >= state.start && point.time <= state.end;
+      }).length;
+      append(
+        rangeStats,
+        el("strong", "", visibleFrames.toLocaleString()),
+        el("span", "", "plotted samples"),
+        el("strong", "", rangesInView(data.scenes).length.toLocaleString()),
+        el("span", "", "scenes"),
+        el("strong", "", rangesInView(data.segments).length.toLocaleString()),
+        el("span", "", data.exactSegments ? "exact segments" : "nominal segments")
+      );
+      drawTracks();
+      selectTime(Math.max(state.start, Math.min(state.end, state.selectedTime)));
+    }
+    function setView(start, end, label) {
+      var minimumSpan = Math.min(data.duration, 1);
+      var nextStart = Math.max(0, Number(start) || 0);
+      var nextEnd = Math.min(data.duration, Number(end) || data.duration);
+      if (nextEnd - nextStart < minimumSpan) {
+        var center = (nextStart + nextEnd) / 2;
+        nextStart = Math.max(0, center - minimumSpan / 2);
+        nextEnd = Math.min(data.duration, nextStart + minimumSpan);
+        nextStart = Math.max(0, nextEnd - minimumSpan);
+      }
+      state.start = nextStart;
+      state.end = Math.max(nextStart + .001, nextEnd);
+      state.rangeLabel = label || "Custom range";
+      state.selectedTime = Math.max(state.start, Math.min(state.end, state.selectedTime));
+      drawChart();
+    }
+    function focusRange(range, label) {
+      setView(range.start, range.end, label || "Focused interval");
+      chart.focus({ preventScroll: true });
+    }
+    function zoom(factor, center) {
+      var span = Math.min(data.duration, Math.max(1, (state.end - state.start) * factor));
+      var point = finiteQualityNumber(center);
+      if (point === null) point = state.selectedTime;
+      var ratio = (point - state.start) / Math.max(.001, state.end - state.start);
+      var start = point - span * Math.max(0, Math.min(1, ratio));
+      start = Math.max(0, Math.min(data.duration - span, start));
+      setView(start, start + span, factor < 1 ? "Zoomed in" : "Zoomed out");
+    }
+    fullButton.addEventListener("click", function () { setView(0, data.duration, "Full video"); });
+    zoomInButton.addEventListener("click", function () { zoom(.5); });
+    zoomOutButton.addEventListener("click", function () { zoom(2); });
+    weakestButton.addEventListener("click", function () {
+      var weakest = data.scenes.slice().sort(function (left, right) {
+        var leftScore = finiteQualityNumber(left.score);
+        var rightScore = finiteQualityNumber(right.score);
+        return (leftScore === null ? Infinity : leftScore) - (rightScore === null ? Infinity : rightScore);
+      })[0];
+      if (weakest) focusRange(weakest, "Weakest scene " + weakest.index);
+    });
+    function eventTime(event) {
+      var bounds = chart.getBoundingClientRect();
+      var ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / Math.max(1, bounds.width)));
+      return state.start + ratio * (state.end - state.start);
+    }
+    chart.addEventListener("pointermove", function (event) { selectTime(eventTime(event)); });
+    chart.addEventListener("click", function (event) {
+      selectTime(eventTime(event));
+      seekVideo(video, state.selectedTime);
+    });
+    chart.addEventListener("wheel", function (event) {
+      if (!event.ctrlKey && !event.shiftKey) return;
+      event.preventDefault();
+      zoom(event.deltaY > 0 ? 1.5 : .67, eventTime(event));
+    }, { passive: false });
+    chart.addEventListener("keydown", function (event) {
+      var index = QUALITY_EXPLORER.nearestPointIndex(data.points, state.selectedTime);
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        if (event.key === "Home") selectTime(state.start);
+        else if (event.key === "End") selectTime(state.end);
+        else {
+          var direction = event.key === "ArrowRight" ? 1 : -1;
+          var nextIndex = Math.max(0, Math.min(data.points.length - 1, index + direction));
+          selectTime(data.points[nextIndex].time);
+        }
+      } else if (event.key === "PageUp" || event.key === "PageDown") {
+        event.preventDefault();
+        var shift = (state.end - state.start) * .75 * (event.key === "PageDown" ? 1 : -1);
+        var start = Math.max(0, Math.min(data.duration - (state.end - state.start), state.start + shift));
+        setView(start, start + (state.end - state.start), "Panned range");
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        seekVideo(video, state.selectedTime);
+      }
+    });
+
+    var drilldowns = el("div", "quality-drilldowns");
+    append(
+      drilldowns,
+      buildQualityRangeTable("Scene details", data.scenes, "scene", video, focusRange, true),
+      buildQualityRangeTable(
+        (data.exactSegments ? "Exact HLS segment details" : "Nominal HLS segment details"),
+        data.segments,
+        "segment",
+        video,
+        focusRange,
+        false
+      )
+    );
+    root.appendChild(drilldowns);
+    drawChart();
+    return root;
+  }
+
   function qualityArtifactLink(basePath, filename, label, download) {
     if (!/^[A-Za-z0-9._-]+$/.test(filename)) return null;
     var link = el("a", "quality-artifact", label);
@@ -2333,8 +3135,11 @@
     var standard = qualityMetricObject(report, ["vmaf", "vmaf_standard", "standard_vmaf", "libvmaf"]);
     var phone = qualityMetricObject(report, ["vmaf_phone", "phone_vmaf", "vmaf_mobile"]);
     var ssim = qualityMetricObject(report, ["ssim", "ssim_y"]);
+    var ssimNormalized = qualityMetricObject(report, ["ssim_normalized", "normalized_ssim"]);
     var psnr = qualityMetricObject(report, ["psnr", "psnr_y"]);
+    var psnrNormalized = qualityMetricObject(report, ["psnr_normalized", "normalized_psnr"]);
     var phash = qualityMetricObject(report, ["phash", "phash_similarity"]);
+    var temporal = qualityMetricObject(report, ["temporal_consistency", "temporal_phash"]);
     var composite = qualityMetricObject(report, ["composite"]);
     var overall = report.overall || report.summary || {};
     var overallScore = qualityMetricValue(overall.score != null ? overall.score : report.overall_score);
@@ -2367,10 +3172,11 @@
     var metricGrid = el("div", "quality-metric-grid");
     [
       ["Standard VMAF", standard, 1, "", "Primary perceptual score", "is-primary"],
-      ["SSIM", ssim, 4, "", "Structural similarity", ""],
-      ["PSNR", psnr, 2, " dB", "Signal fidelity", ""],
+      ["SSIM", ssim, 4, "", "Normalized score " + metricDisplay(ssimNormalized, 1), ""],
+      ["PSNR", psnr, 2, " dB", "Normalized score " + metricDisplay(psnrNormalized, 1), ""],
       ["pHash", phash, 1, "", "Cross-stream visual similarity", ""],
-      ["Phone VMAF", phone, 1, "", "Informational phone-viewing model", "is-informational"]
+      ["Phone VMAF", phone, 1, "", "Informational phone-viewing model", "is-informational"],
+      ["Temporal pHash", temporal, 1, "", "Informational motion consistency", "is-informational"]
     ].forEach(function (metric) {
       var card = el("article", "quality-metric-card " + metric[5]);
       var label = el("div", "quality-metric-label");
@@ -2392,26 +3198,38 @@
       section.appendChild(el("p", "quality-normalization-note", "HDR-normalized comparison · source and encode were converted to the same analysis range so the scores remain comparable."));
     }
 
-    var timeline = buildQualityTimeline(report, video);
-    if (timeline) {
+    var detailedExplorer = buildDetailedQualityExplorer(report, item, video);
+    if (detailedExplorer) {
       var timelineSection = el("div", "quality-report-block");
       var timelineHead = el("div", "quality-subhead");
-      append(timelineHead, el("h3", "", "Quality over time"), el("p", "", "Point at the graph to inspect · click to play that moment"));
-      append(timelineSection, timelineHead, timeline);
+      append(
+        timelineHead,
+        el("h3", "", "Quality over time"),
+        el("p", "", "Interactive score comparison · exact scene and HLS drill-down")
+      );
+      append(timelineSection, timelineHead, detailedExplorer);
       section.appendChild(timelineSection);
-    }
-
-    var scenes = buildWorstSceneTable(report, video);
-    if (scenes) {
-      var sceneSection = el("div", "quality-report-block");
-      var sceneHead = el("div", "quality-subhead");
-      append(sceneHead, el("h3", "", "Worst scenes"), el("p", "", "Lowest overall score first · up to 12 scenes"));
-      append(sceneSection, sceneHead, scenes);
-      section.appendChild(sceneSection);
+    } else {
+      var timeline = buildQualityTimeline(report, video);
+      if (timeline) {
+        var fallbackSection = el("div", "quality-report-block");
+        var fallbackHead = el("div", "quality-subhead");
+        append(fallbackHead, el("h3", "", "Quality over time"), el("p", "", "Point at the graph to inspect · click to play that moment"));
+        append(fallbackSection, fallbackHead, timeline);
+        section.appendChild(fallbackSection);
+      }
+      var scenes = buildWorstSceneTable(report, video);
+      if (scenes) {
+        var sceneSection = el("div", "quality-report-block");
+        var sceneHead = el("div", "quality-subhead");
+        append(sceneHead, el("h3", "", "Worst scenes"), el("p", "", "Lowest overall score first · up to 12 scenes"));
+        append(sceneSection, sceneHead, scenes);
+        section.appendChild(sceneSection);
+      }
     }
 
     var footer = el("div", "quality-report-footer");
-    var generated = report.generated_at || report.completed_at || report.analyzed_at;
+    var generated = report.source && report.source.report_generated_at || report.generated_at || report.completed_at || report.analyzed_at;
     footer.appendChild(el("p", "", generated ? "Report generated " + formatDate(generated, true) : "Cached report for this exact source version"));
     var artifacts = el("div", "quality-artifacts");
     append(
@@ -2430,19 +3248,42 @@
     var safeKey = String(item.cache_key || "");
     if (!/^[0-9a-f]{18}--[0-9a-f]{14}$/.test(safeKey)) return Promise.resolve(null);
     var reportBase = "data/quality/" + encodeURIComponent(safeKey) + "/";
-    return fetch(reportBase + "report.json?_=" + Date.now(), { cache: "no-store", credentials: "same-origin" })
-      .then(function (response) {
-        if (response.status === 404) return null;
-        if (!response.ok) throw new Error("Quality report request returned " + response.status);
-        return response.json();
+    function request(filename) {
+      return fetch(reportBase + filename + "?_=" + Date.now(), {
+        cache: "no-store",
+        credentials: "same-origin"
       })
-      .then(function (report) {
-        if (!report || report.enabled === false || String(report.state || "").toLowerCase() === "disabled") return null;
-        if (report.cache_key && report.cache_key !== item.cache_key) return null;
-        if (report.video_id && report.video_id !== item.id) return null;
-        if (report.gallery && report.gallery.cache_key && report.gallery.cache_key !== item.cache_key) return null;
-        if (report.gallery && report.gallery.video_id && report.gallery.video_id !== item.id) return null;
-        return { report: report, base: reportBase };
+        .then(function (response) {
+          if (response.status === 404) return null;
+          if (!response.ok) throw new Error("Quality report request returned " + response.status);
+          return response.json();
+        });
+    }
+    function validForItem(report) {
+      if (!report || report.enabled === false || String(report.state || "").toLowerCase() === "disabled") return false;
+      if (report.cache_key && report.cache_key !== item.cache_key) return false;
+      if (report.video_id && report.video_id !== item.id) return false;
+      if (report.source && report.source.cache_key && report.source.cache_key !== item.cache_key) return false;
+      if (report.gallery && report.gallery.cache_key && report.gallery.cache_key !== item.cache_key) return false;
+      if (report.gallery && report.gallery.video_id && report.gallery.video_id !== item.id) return false;
+      return true;
+    }
+    return request("dashboard.json")
+      .catch(function () { return null; })
+      .then(function (dashboard) {
+        if (
+          validForItem(dashboard) &&
+          dashboard.overview &&
+          Array.isArray(dashboard.overview.points)
+        ) {
+          dashboard._quality_dashboard = true;
+          return dashboard;
+        }
+        return request("report.json");
+      })
+      .then(function (response) {
+        if (!validForItem(response)) return null;
+        return { report: response, base: reportBase };
       })
       .catch(function () { return null; });
   }

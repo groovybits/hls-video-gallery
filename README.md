@@ -26,7 +26,8 @@ neutral and work for any private video archive.
 - Live web and terminal telemetry for queue position, FPS, speed, ETA, current
   thumbnail, sanitized FFmpeg parameters, and the active command.
 - Optional post-encode objective quality reports with standard and Phone VMAF,
-  SSIM, PSNR, 64-bit perceptual hashes, per-scene scores, and a visual timeline.
+  SSIM, PSNR, 64-bit perceptual hashes, per-scene scores, and an interactive
+  scene/HLS-segment quality explorer that compares every metric over time.
 - A macOS manager for direct Photos/iCloud-original exports, safe uploads,
   server inventory, processing status, details, and guarded source deletion.
 - Apache Basic Auth with bcrypt password hashes outside the document root.

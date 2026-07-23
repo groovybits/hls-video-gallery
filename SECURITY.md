@@ -16,6 +16,9 @@ privately and include the affected version and a minimal reproduction.
   cached version until its source is replaced or removed.
 - Review the Apache virtual host to ensure `AllowOverride All` (or equivalent
   explicit rules) applies to the gallery directory.
+- Keep `/usr/local/libexec/hls-video-gallery/prepare-media-permissions.py`
+  root-owned. The permission service deliberately skips symlinks and unsupported
+  file types while making source videos readable by the unprivileged scanner.
 - Keep the OS, Apache, PHP, FFmpeg, and Python packages updated.
 
 This project does not provide DRM. Authentication and signed URLs control access;

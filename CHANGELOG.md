@@ -2,6 +2,14 @@
 
 All notable changes are documented here.
 
+## 1.1.0 — 2026-07-23
+
+- Added persistent upload timestamps and upload-order sorting in the gallery.
+- Changed the encoding queue to oldest-upload-first order and labeled that order
+  in live status.
+- Added automatic ownership and permission repair for newly uploaded media,
+  including files copied by an administrator account.
+
 ## 1.0.1 — 2026-07-23
 
 - Added synchronized pagination controls above and below the video grid.

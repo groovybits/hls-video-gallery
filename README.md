@@ -19,10 +19,10 @@ neutral and work for any private video archive.
 - Source-aware caching: unchanged videos are never re-encoded.
 - Automatic removal from the catalog when a source disappears; stale cache output
   is retained briefly for safety and then cleaned.
-- Search, 10-item paging, multiple sorts, duration filters, filename hints,
-  optional visual tags, previous/next navigation, and filtered shuffle.
-- Source video/audio metadata, creation and modified dates, stream details, and
-  a visual timeline.
+- Search, 10-item paging, modified/upload-order sorts, duration filters, filename
+  hints, optional visual tags, previous/next navigation, and filtered shuffle.
+- Source video/audio metadata, upload, creation, and modified dates, stream
+  details, and a visual timeline.
 - Live web and terminal telemetry for queue position, FPS, speed, ETA, current
   thumbnail, sanitized FFmpeg parameters, and the active command.
 - Apache Basic Auth with bcrypt password hashes outside the document root.
@@ -82,12 +82,18 @@ At minimum, change:
 
 Then copy or upload videos into the printed `Media directory`. The scan timer
 notices stable files, processes one at a time, and publishes each completed video
-without waiting for the entire queue.
+without waiting for the entire queue. A root-owned permission watcher safely
+normalizes supported source videos to the configured site account before the
+unprivileged scanner reads them.
 
 ```bash
 cp my-video.mp4 /var/www/html/videos/media/
 hls-gallery-status-my-video-gallery --watch
 ```
+
+The encoding queue is first-in, first-out by upload order. The gallery also
+offers “Recently uploaded” and “First uploaded” sorts independently from source
+modification dates.
 
 The `instance_id` is part of every systemd unit and status command, so multiple
 independent galleries can coexist on one server.

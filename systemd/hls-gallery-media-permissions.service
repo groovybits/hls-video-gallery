@@ -1,0 +1,17 @@
+[Unit]
+Description=HLS Video Gallery (@@INSTANCE_ID@@) media permission repair
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /usr/local/libexec/hls-video-gallery/prepare-media-permissions.py --media-dir @@DOCUMENT_ROOT@@/media --owner @@OWNER@@ --quiet
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@@DOCUMENT_ROOT@@/media
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+RestrictAddressFamilies=AF_UNIX

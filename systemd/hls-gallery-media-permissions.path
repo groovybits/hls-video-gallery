@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch HLS Video Gallery (@@INSTANCE_ID@@) for new media uploads
+
+[Path]
+PathChanged=@@DOCUMENT_ROOT@@/media
+Unit=hls-gallery-@@INSTANCE_ID@@-media-permissions.service
+
+[Install]
+WantedBy=multi-user.target

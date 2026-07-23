@@ -18,7 +18,7 @@ import traceback
 from urllib.parse import quote
 
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 CACHE_VERSION = 6
 HLS_PRESET = "superfast"
 ALLOWED_HLS_PRESETS = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}
@@ -747,7 +747,7 @@ def reusable_cached_item(previous, stable_id, relative, stat_result, cache_root)
 
 
 def process_video(path, relative, stat_result, settings, cache_root, ffmpeg, ffprobe, previous=None, force=False):
-    stable_id = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:18]
+    stable_id = source_id(relative)
     signature = source_signature(relative, stat_result)
     version = canonical_hash(signature, 14)
     cache_key = "{}--{}".format(stable_id, version)
@@ -859,6 +859,93 @@ def discover_videos(media_root, extensions):
         if path.suffix.lower() in extensions:
             videos.append(path)
     return sorted(videos, key=lambda value: str(value).casefold())
+
+
+def source_id(relative):
+    return hashlib.sha256(relative.encode("utf-8")).hexdigest()[:18]
+
+
+def update_ingest_order(order_path, videos, media_root):
+    """Persist first-seen upload order independently from filenames and source edits."""
+    existed = order_path.is_file()
+    payload = load_json(order_path, {})
+    stored = payload.get("items", {}) if isinstance(payload, dict) else {}
+    if not isinstance(stored, dict):
+        stored = {}
+
+    records = {}
+    pending = []
+    present_ids = set()
+    highest_sequence = 0
+    changed = not existed or payload.get("schema_version") != 1
+    observed_epoch = time.time()
+
+    for path in videos:
+        relative = path.relative_to(media_root).as_posix()
+        stable_id = source_id(relative)
+        present_ids.add(stable_id)
+        record = stored.get(stable_id)
+        sequence = integer(record.get("sequence")) if isinstance(record, dict) else 0
+        if sequence > 0 and record.get("relative_path") == relative:
+            records[stable_id] = {
+                "relative_path": relative,
+                "sequence": sequence,
+                "uploaded_at": str(record.get("uploaded_at") or utc_iso(observed_epoch)),
+            }
+            highest_sequence = max(highest_sequence, sequence)
+            continue
+        try:
+            stat_result = path.stat()
+        except OSError:
+            continue
+        pending.append((stat_result.st_mtime_ns, relative.casefold(), stable_id, relative, stat_result.st_mtime))
+
+    next_sequence = max(integer(payload.get("next_sequence"), 1), highest_sequence + 1)
+    bootstrap_existing_library = not existed
+    for _mtime_ns, _relative_key, stable_id, relative, modified_epoch in sorted(pending):
+        records[stable_id] = {
+            "relative_path": relative,
+            "sequence": next_sequence,
+            "uploaded_at": utc_iso(modified_epoch if bootstrap_existing_library else observed_epoch),
+        }
+        next_sequence += 1
+        changed = True
+
+    if set(stored) != present_ids:
+        changed = True
+
+    output = {
+        "schema_version": 1,
+        "updated_at": utc_iso(),
+        "next_sequence": next_sequence,
+        "items": records,
+    }
+    if changed or payload.get("next_sequence") != next_sequence:
+        atomic_write_json(order_path, output)
+    return records
+
+
+def order_videos_by_upload(videos, media_root, records):
+    def upload_key(path):
+        relative = path.relative_to(media_root).as_posix()
+        record = records.get(source_id(relative)) or {}
+        return (
+            integer(record.get("sequence"), 2**63 - 1),
+            relative.casefold(),
+        )
+    return sorted(videos, key=upload_key)
+
+
+def apply_upload_metadata(item, record):
+    if not isinstance(item, dict) or not isinstance(record, dict):
+        return item
+    sequence = integer(record.get("sequence"))
+    uploaded_at = str(record.get("uploaded_at") or "")
+    if sequence > 0:
+        item["upload_sequence"] = sequence
+    if uploaded_at:
+        item["uploaded_at"] = uploaded_at
+    return item
 
 
 def clean_cache(cache_root, active_keys, retention_seconds):
@@ -1001,6 +1088,11 @@ def main():
         failures = {}
 
     videos = discover_videos(media_root, extensions)
+    ingest_records = update_ingest_order(data_root / "ingest-order.json", videos, media_root)
+    videos = order_videos_by_upload(videos, media_root, ingest_records)
+    for previous_item in previous_catalog.get("items", []):
+        if isinstance(previous_item, dict) and previous_item.get("id"):
+            apply_upload_metadata(previous_item, ingest_records.get(previous_item["id"]))
     log("Found {} source video{} in {}".format(len(videos), "" if len(videos) == 1 else "s", media_root))
     if arguments.verbose:
         log("Encoding policy: one rendition up to {}p, x264 preset {}".format(
@@ -1022,7 +1114,7 @@ def main():
         if previous_item.get("version") == expected_version:
             published_by_id[previous_item["id"]] = previous_item
     for relative, video_path in video_by_relative.items():
-        stable_id = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:18]
+        stable_id = source_id(relative)
         try:
             stat_result = video_path.stat()
         except OSError:
@@ -1031,6 +1123,7 @@ def main():
             published_by_id.get(stable_id), stable_id, relative, stat_result, cache_root,
         )
         if recovered:
+            apply_upload_metadata(recovered, ingest_records.get(stable_id))
             published_by_id[stable_id] = recovered
     processed_count = 0
     cached_count = 0
@@ -1044,7 +1137,7 @@ def main():
 
     for index, path in enumerate(videos, 1):
         relative = path.relative_to(media_root).as_posix()
-        stable_id = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:18]
+        stable_id = source_id(relative)
         previous = previous_by_id.get(stable_id)
         try:
             stat_result = path.stat()
@@ -1079,6 +1172,7 @@ def main():
                 path, relative, stat_result, settings, cache_root, ffmpeg, ffprobe,
                 previous=previous, force=arguments.force,
             )
+            apply_upload_metadata(item, ingest_records.get(stable_id))
             creation_indexed = False
             if not changed and "creation_at" not in item:
                 try:

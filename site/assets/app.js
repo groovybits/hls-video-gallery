@@ -6,17 +6,22 @@
   var updatedNode = document.getElementById("catalog-updated");
   var catalog = null;
   var contentIndex = { items: {}, analyzed_count: 0, pending_count: 0 };
+  var qualityIndex = { items: {}, analyzed_count: 0, pending_count: 0 };
   var activeHls = null;
   var mediaAccessCache = {};
   var shareLinkCache = {};
   var encodeProgress = null;
   var categoryProgress = null;
   var qualityProgress = null;
+  var qualityTelemetryStale = false;
   var telemetryTimer = null;
   var categoryTimer = null;
   var qualityTimer = null;
   var catalogTimer = null;
   var contentIndexTimer = null;
+  var qualityIndexTimer = null;
+  var qualityProgressRequestId = 0;
+  var qualityIndexRequestId = 0;
   var CONFIG = window.HLS_GALLERY_CONFIG || {};
   var SITE = CONFIG.site || {};
   var BRAND = CONFIG.brand || {};
@@ -234,6 +239,12 @@
   function visualRecordFor(item) {
     var record = (contentIndex.items || {})[item.id];
     if (!record || record.cache_key !== item.cache_key || !Array.isArray(record.tags)) return null;
+    return record;
+  }
+
+  function qualityRecordFor(item) {
+    var record = (qualityIndex.items || {})[item.id];
+    if (!record || record.cache_key !== item.cache_key) return null;
     return record;
   }
 
@@ -953,7 +964,9 @@
   }
 
   function qualityMonitorVisible() {
-    if (!qualityProgress || qualityProgress.enabled === false) return false;
+    if (FEATURES.quality_analysis === false) return false;
+    if (!qualityProgress) return true;
+    if (qualityProgress.enabled === false) return false;
     return String(qualityProgress.state || "").toLowerCase() !== "disabled";
   }
 
@@ -961,6 +974,32 @@
     if (!qualityMonitorVisible()) return null;
 
     var progress = qualityProgress;
+    if (!progress) {
+      var reportsReady = Number(qualityIndex.analyzed_count || 0);
+      var reportsPending = Number(qualityIndex.pending_count || 0);
+      var knownTotal = Number(qualityIndex.catalog_count || 0) || (catalog && catalog.items ? catalog.items.length : 0);
+      if (!qualityIndex.updated_at && knownTotal) reportsPending = Math.max(0, knownTotal - reportsReady);
+      if (!qualityIndex.updated_at && !knownTotal) {
+        var loadingSection = el("section", "encoding-monitor quality-monitor library-monitor telemetry-loading");
+        loadingSection.id = "quality-monitor";
+        loadingSection.setAttribute("aria-label", "Streaming quality analysis status");
+        append(loadingSection, el("span", "monitor-pulse"), el("p", "", "Checking encoded quality reports…"));
+        return loadingSection;
+      }
+      progress = {
+        state: reportsPending ? "waiting" : "complete",
+        phase: reportsPending ? "waiting_for_next_batch" : "complete",
+        phase_label: reportsPending ? "Quality reports are queued" : "Quality analysis complete",
+        catalog_count: knownTotal,
+        analyzed_count: reportsReady,
+        pending_count: reportsPending,
+        waiting_content_count: 0,
+        percent: knownTotal ? 100 * reportsReady / knownTotal : 100,
+        upcoming: [],
+        last_result: qualityIndex.last_result || null,
+        updated_at: qualityIndex.updated_at
+      };
+    }
     var state = String(progress.state || (progress.active ? "analyzing" : "waiting")).toLowerCase();
     var active = Boolean(progress.active) || state === "analyzing" || state === "running" || state === "processing";
     var complete = state === "complete" || state === "idle" && Number(progress.pending_count || 0) === 0;
@@ -980,6 +1019,12 @@
     var frameDone = Number(engine.frames_done || 0);
     var framePercent = frameTotal ? 100 * frameDone / frameTotal : 0;
     var currentTitle = current.title || current.source_relative || progress.source || "";
+    var lastResult = progress.last_result && typeof progress.last_result === "object"
+      ? progress.last_result
+      : (qualityIndex.last_result && typeof qualityIndex.last_result === "object" ? qualityIndex.last_result : {});
+    var lastSummary = lastResult.summary && typeof lastResult.summary === "object" ? lastResult.summary : lastResult;
+    var lastScore = qualityMetricValue(lastSummary.score != null ? lastSummary.score : lastResult.score);
+    var lastVmaf = qualityMetricValue(lastSummary.vmaf_standard);
 
     var section = el("section", "encoding-monitor quality-monitor library-monitor");
     section.id = "quality-monitor";
@@ -1001,11 +1046,15 @@
       badgeRow,
       el("h2", "", progress.phase_label || (active ? "Measuring encoded video quality" : "Perceptual quality analysis")),
       el("p", "monitor-source", currentTitle ? prettyVideoTitle(currentTitle) : (
-        progress.note || progress.reason || (
-          toNumber(progress.pending_count, 0) > 0
-            ? "The next queued video will start when the timer runs and resources are free."
-            : "Waiting for an encoded video to analyze."
-        )
+        lastResult.title
+          ? "Last completed: " + prettyVideoTitle(lastResult.title) + (
+            lastScore === null ? "" : " · " + lastScore.toFixed(1) + (lastSummary.band ? " · " + lastSummary.band : "")
+          )
+          : progress.note || progress.reason || (
+            Number(progress.pending_count || 0) > 0
+              ? "The next queued video will start when the timer runs and resources are free."
+              : "Waiting for an encoded video to analyze."
+          )
       ))
     );
     var count = el("div", "monitor-queue quality-count");
@@ -1023,12 +1072,18 @@
     section.appendChild(top);
 
     var metrics = el("div", "monitor-metrics quality-live-metrics");
-    [
+    var metricValues = active ? [
       [formatNumber(engine.fps, 1), "analysis fps"],
       [formatNumber(engine.speed, 2) + "×", "real-time speed"],
       [formatPercent(enginePercent), "current metric"],
-      [active ? formatDuration(engine.eta_seconds || progress.eta_seconds) : (complete ? "Complete" : "Waiting"), "estimated remaining"]
-    ].forEach(function (metric) {
+      [formatDuration(engine.eta_seconds || progress.eta_seconds), "estimated remaining"]
+    ] : [
+      [lastScore === null ? "—" : lastScore.toFixed(1), "last overall score"],
+      [lastVmaf === null ? "—" : lastVmaf.toFixed(1), "last standard VMAF"],
+      [String(analyzedCount), "reports ready"],
+      [String(pendingCount + Number(progress.waiting_content_count || 0)), complete ? "videos remaining" : "videos queued"]
+    ];
+    metricValues.forEach(function (metric) {
       var card = el("div", "monitor-metric");
       append(card, el("strong", "", metric[0]), el("span", "", metric[1]));
       metrics.appendChild(card);
@@ -1103,7 +1158,7 @@
     var facts = el("div", "category-facts quality-facts");
     [
       [formatNumber(progress.average_seconds_per_video, 1) + " sec", "average per video"],
-      [formatDuration(progress.elapsed_seconds), "current run elapsed"],
+      [active ? formatDuration(progress.elapsed_seconds) : (lastResult.analyzed_at ? formatDate(lastResult.analyzed_at, true) : "Not yet"), active ? "current run elapsed" : "last report"],
       [complete ? "Complete" : formatFinishTime(progress.estimated_finish_at), "estimated finish"],
       [Number(engine.scenes_detected || 0), "current scenes"]
     ].forEach(function (metric) {
@@ -1200,6 +1255,9 @@
     }
     section.appendChild(detailBar);
     if (failed && progress.error) section.appendChild(el("p", "category-error", progress.error));
+    if (qualityTelemetryStale) {
+      section.appendChild(el("p", "category-error quality-stale-note", "The last quality overview is still displayed, but its newest telemetry refresh was unavailable."));
+    }
     section.appendChild(el("p", "monitor-note", "Quality reports compare the encoded rendition with its source. Completed reports remain cached until that source version changes."));
     return section;
   }
@@ -1231,18 +1289,57 @@
 
   function loadQualityProgress() {
     if (currentVideoId()) return;
+    var requestId = ++qualityProgressRequestId;
     fetch("data/quality-analysis-progress.json?_=" + Date.now(), { cache: "no-store", credentials: "same-origin" })
       .then(function (response) {
         if (!response.ok) throw new Error("Quality telemetry request returned " + response.status);
         return response.json();
       })
       .then(function (data) {
+        if (requestId !== qualityProgressRequestId) return;
+        var previousAnalyzed = Number(qualityProgress && qualityProgress.analyzed_count || 0);
         qualityProgress = data;
+        qualityTelemetryStale = false;
+        refreshQualityMonitor();
+        if (Number(data.analyzed_count || 0) !== previousAnalyzed) loadQualityIndex(true);
+      })
+      .catch(function () {
+        if (requestId !== qualityProgressRequestId) return;
+        qualityTelemetryStale = Boolean(qualityProgress || qualityIndex.updated_at);
+        refreshQualityMonitor();
+      });
+  }
+
+  function refreshVisibleCardQuality() {
+    if (!catalog || currentVideoId()) return;
+    var byId = {};
+    catalog.items.forEach(function (item) { byId[item.id] = item; });
+    document.querySelectorAll(".video-card[data-video-id]").forEach(function (card) {
+      var item = byId[card.getAttribute("data-video-id")];
+      var link = card.querySelector("a");
+      var existing = card.querySelector(".card-quality");
+      if (!item || !link || !existing) return;
+      existing.replaceWith(buildCardQuality(item, link));
+    });
+  }
+
+  function loadQualityIndex() {
+    if (FEATURES.quality_analysis === false) return;
+    var requestId = ++qualityIndexRequestId;
+    fetch("data/quality-cards.json?_=" + Date.now(), { cache: "no-store", credentials: "same-origin" })
+      .then(function (response) {
+        if (!response.ok) throw new Error("Quality card summary request returned " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        if (requestId !== qualityIndexRequestId) return;
+        if (!data || !data.items || typeof data.items !== "object") return;
+        qualityIndex = data;
+        refreshVisibleCardQuality();
         refreshQualityMonitor();
       })
       .catch(function () {
-        qualityProgress = null;
-        refreshQualityMonitor();
+        // Keep the last valid card summaries and monitor counts on transient failures.
       });
   }
 
@@ -1262,9 +1359,55 @@
       });
   }
 
+  function buildCardQuality(item, link) {
+    var record = qualityRecordFor(item);
+    var summary = record && record.summary && typeof record.summary === "object"
+      ? record.summary
+      : record || {};
+    var score = qualityMetricValue(summary.score != null ? summary.score : record && record.score);
+    var band = String(summary.band || record && record.band || "").trim();
+    var block = el("section", "card-quality" + (record ? "" : " is-pending"));
+    block.setAttribute("aria-label", record ? "Encoded quality scores" : "Encoded quality analysis pending");
+    var head = el("div", "card-quality-head");
+    var headingId = "card-quality-" + String(item.id).replace(/[^A-Za-z0-9_-]/g, "");
+    head.id = headingId;
+    append(
+      head,
+      el("span", "", "Encoded quality"),
+      el("strong", "", record
+        ? (score === null ? "Report ready" : score.toFixed(1)) + (band ? " · " + band : "")
+        : "Analysis pending")
+    );
+    block.appendChild(head);
+    if (link) link.setAttribute("aria-describedby", headingId);
+    if (!record) {
+      block.appendChild(el("p", "card-quality-pending", "Scores will appear here when the queued comparison finishes."));
+      return block;
+    }
+
+    var metrics = el("dl", "card-quality-metrics");
+    [
+      ["VMAF", summary.vmaf_standard, 1, ""],
+      ["SSIM", summary.ssim, 4, ""],
+      ["PSNR", summary.psnr_y, 2, " dB"],
+      ["pHash", summary.phash_similarity, 1, ""]
+    ].forEach(function (metric) {
+      var wrap = el("div", "card-quality-metric");
+      append(
+        wrap,
+        el("dt", "", metric[0]),
+        el("dd", "", metricDisplay(metric[1], metric[2], metric[3]))
+      );
+      metrics.appendChild(wrap);
+    });
+    block.appendChild(metrics);
+    return block;
+  }
+
   function buildCard(item, cardIndex) {
     var displayTitle = prettyVideoTitle(item.title || item.source_relative);
     var card = el("article", "video-card");
+    card.setAttribute("data-video-id", item.id);
     var link = el("a");
     link.href = routeHref(item.id);
     link.setAttribute("aria-label", "Open " + displayTitle);
@@ -1339,6 +1482,7 @@
     var length = durationClass(item);
     var lengthTag = el("div", "card-length-row");
     lengthTag.appendChild(el("span", "length-chip length-" + length.key, length.label + " · " + length.description));
+    var quality = FEATURES.quality_analysis === false ? null : buildCardQuality(item, link);
     var facts = el("div", "card-facts");
     var video = item.video_streams[0] || {};
     append(facts,
@@ -1347,7 +1491,7 @@
       el("span", "chip", formatBytes(item.size_bytes)),
       item.uploaded_at ? el("span", "chip", "Uploaded " + formatDate(item.uploaded_at, false)) : null
     );
-    append(body, title, path, tagSources, lengthTag, facts);
+    append(body, title, path, quality, tagSources, lengthTag, facts);
     append(link, poster, body);
     card.appendChild(link);
     var shareButton = buildShareButton(item, "card-share-button", "Share ↗");
@@ -2763,6 +2907,7 @@
     if (qualityTimer) window.clearInterval(qualityTimer);
     if (catalogTimer) window.clearInterval(catalogTimer);
     if (contentIndexTimer) window.clearInterval(contentIndexTimer);
+    if (qualityIndexTimer) window.clearInterval(qualityIndexTimer);
   });
   loadLibraryStateFromUrl();
   if (FEATURES.encoder_status) {
@@ -2776,6 +2921,8 @@
     contentIndexTimer = window.setInterval(function () { loadContentIndex(true); }, 60000);
   }
   if (FEATURES.quality_analysis !== false) {
+    loadQualityIndex();
+    qualityIndexTimer = window.setInterval(loadQualityIndex, 30000);
     loadQualityProgress();
     qualityTimer = window.setInterval(loadQualityProgress, 5000);
   }

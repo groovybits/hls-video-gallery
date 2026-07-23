@@ -200,8 +200,10 @@ separately because neither should be treated as human-reviewed fact.
 Quality analysis is off by default. When enabled, a low-priority worker compares
 each finished HLS encode with its source at aligned 30 fps, caches the result for
 that exact source/settings version, and publishes overall, per-metric, and
-per-scene results. It waits for encoding and optional visual analysis instead of
-competing with them, and is capped at two CPU cores.
+per-scene results. Its overview remains visible between timer runs, and completed
+overall, VMAF, SSIM, PSNR, and pHash scores appear on the main video cards. It
+waits for encoding and optional visual analysis instead of competing with them,
+and is capped at two CPU cores.
 
 The normal dependency and application installers build the standalone C++
 analyzer when the feature is enabled:

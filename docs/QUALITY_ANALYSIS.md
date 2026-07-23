@@ -219,9 +219,10 @@ they can identify source files and disclose detailed information about a video.
 
 ## Gallery status and reports
 
-The authenticated library shows quality status below visual-analysis status and
-adds the overall score, metric summary, scene table, and timeline to each video
-detail page.
+The authenticated library keeps quality status visible below visual-analysis
+status even between timer runs. The main video cards show the overall score plus
+Standard VMAF, SSIM, PSNR, and pHash when a report is ready. Each video detail
+page adds the full metric summary, scene table, and timeline.
 
 Use the instance-specific terminal command printed by the installer:
 
@@ -240,8 +241,10 @@ systemctl start hls-gallery-my-video-gallery-quality.service
 ```
 
 Reports live below `data/quality/CACHE-KEY/`. Apache restricts that tree to the
-generated JSON, CSV, and HTML filenames, and the gallery's normal authentication
-still applies.
+generated JSON, CSV, and HTML filenames. The compact
+`data/quality-cards.json` projection feeds listing cards with one request while
+the full `data/quality-index.json` remains private worker state. The gallery's
+normal authentication still applies to the card projection and reports.
 
 ## Troubleshooting
 
